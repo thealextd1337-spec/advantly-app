@@ -1,0 +1,56 @@
+package eu.advantly.umbrella.watch
+
+import eu.advantly.core.scoring.CoreScoringInfo
+import eu.advantly.data.DataInfo
+import eu.advantly.device.link.DeviceLinkInfo
+import eu.advantly.match.session.OperationTimings
+
+/**
+ * Öffentliche Swift-API von `AdvantlyWatchKit` – bewusst klein halten (Facade).
+ * Ohne SKIE exportiert: nur einfache Typen an der Grenze (String, Int, Long, Boolean, Listen, einfache Klassen);
+ * keine Flows, suspend-Funktionen, sealed-Hierarchien oder Generics. Asynchrones über Callback-Interfaces
+ * (z. B. [WatchScoringListener]).
+ * Liefert nur Daten, keine UI-Texte: Lokalisierung passiert auf der Swift-Seite (`watchApp/en.lproj`, `watchApp/de.lproj`).
+ * Swift: `AdvantlyWatch.shared.engineModule()`, `AdvantlyWatch.shared.store().smokeCheck()`.
+ */
+object AdvantlyWatch {
+    const val MODULE = "umbrella-watch"
+    const val FRAMEWORK = "AdvantlyWatchKit"
+
+    /** Direkte Modulabhängigkeiten laut 01 §2.2 – referenziert, damit die Verdrahtung kompiliert. */
+    val dependsOn: List<String> = listOf(DataInfo.MODULE, DeviceLinkInfo.MODULE)
+
+    // Eine Datenbank (eine SQLite-Verbindung) für Store-Smoke und Match-Session; die Session entsteht erst beim ersten
+    // Zugriff in WatchScoring (Fehler, z. B. veraltetes Schema, landen dort als isAvailable() = false statt als Absturz)
+    private val sharedData by lazy { platformLocalData() }
+    private val sharedStore: WatchStore by lazy { WatchStore(sharedData.events) }
+    private val sharedScoring: WatchScoring by lazy {
+        WatchScoring({ sharedData.let { WatchScoring.Backend(platformWatchSession(it), it) } })
+    }
+
+    private val sharedHealth: WatchHealth by lazy { WatchHealth(sharedScoring::session) }
+
+    /** Name des Engine-Moduls – Platzhalter-Aufruf, der beweist, dass die Uhr Kotlin-Code ausführt. */
+    fun engineModule(): String = CoreScoringInfo.MODULE
+
+    /** Lokaler Event-Store der Uhr (SQLDelight, Datei `advantly.db`); eine Instanz je Prozess. */
+    fun store(): WatchStore = sharedStore
+
+    /** Zählen bzw. Anzeigen auf der Uhr über die gemeinsame Match-Session (W1-E); eine Instanz je Prozess. */
+    fun scoring(): WatchScoring = sharedScoring
+
+    /** Pulsverlauf zum Match (Plan Puls H7) über dieselbe Session wie [scoring]; eine Instanz je Prozess. */
+    fun health(): WatchHealth = sharedHealth
+
+    /** Aufschlag-Leiste: sichtbar ohne Auswahl (ms) – gleiche Zeit wie Wear OS (`OperationTimings`). */
+    fun serveBarVisibleMillis(): Long = OperationTimings.SERVE_BAR_VISIBLE_MILLIS
+
+    /** Aufschlag-Leiste: nach einer Auswahl noch sichtbar (ms), verlängert nie. */
+    fun serveBarAfterChoiceMillis(): Long = OperationTimings.SERVE_BAR_AFTER_CHOICE_MILLIS
+
+    /** Schutzfenster nach dem Erscheinen der Aufschlag-Tasten (Fehl-Tipp direkt nach dem Punkt). */
+    fun serveBarArmMillis(): Long = OperationTimings.SERVE_BAR_ARM_MILLIS
+
+    /** Halten auf einer Hälfte zum Abziehen des letzten Punktes (ms). */
+    fun holdToRemoveMillis(): Long = OperationTimings.HOLD_TO_REMOVE_MILLIS
+}

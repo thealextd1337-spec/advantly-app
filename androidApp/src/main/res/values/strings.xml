@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recovery_notice_title">Existing data kept safe</string>
+    <string name="recovery_notice_body">Your previous data is retained separately and has not been restored. Device sync and account features remain paused. You can count new matches offline.</string>
+    <string name="recovery_decision_body">This app was restored or updated. Your previous data is kept safely but is not shown yet.\n\nRestore (recommended): the data is copied for this device with a new device identity. Data linked to an account only appears after you sign in with that same account; data without an account appears on this device. Sign in again afterwards and confirm pairing on your watch.\n\nStart without it: the previous data stays stored on this device and can still be restored later under Profile.\n\nDecide later: nothing changes for now. If you count new matches in the meantime, restoring is only possible after you delete them.</string>
+    <string name="recovery_blocked_body">Matches were already counted on this device since then. Restoring would hide them. Delete those matches first if you want to restore. Your previous data stays stored either way.</string>
+    <string name="recovery_failed_body">Restoring did not work. Nothing was changed and your previous data is still kept. Try again later.</string>
+    <string name="recovery_restore">Restore previous data</string>
+    <string name="recovery_start_fresh">Start without it</string>
+    <string name="recovery_continue_offline">Decide later</string>
+    <string name="recovery_fresh_confirm_title">Start without previous data?</string>
+    <string name="recovery_fresh_confirm_body">Your previous matches will not be shown or synced on this device. They stay stored here, and you can still restore them later under Profile – as long as you count no new matches on this device or delete them again. You will need to sign in again.</string>
+    <string name="recovery_later_title">Restore previous data</string>
+    <string name="recovery_later_body">Your previous data is copied for this device with a new device identity, and the app restarts. What this device has stored since then stays saved but is no longer shown. Data linked to an account appears after you sign in with that same account. Sign in again afterwards and confirm pairing on your watch.</string>
+    <string name="recovery_save_failed">That did not work. Nothing was switched and your data is unchanged. Try again; you may need to sign in again.</string>
+    <string name="recovery_done_title">Previous data restored</string>
+    <string name="recovery_done_body">This device now has its own new identity. Data linked to an account appears after you sign in with that same account – a different account sees none of it. If you use a watch, confirm pairing again on the watch.</string>
+    <!-- Markenname, in allen Sprachen gleich -->
+    <string name="app_name" translatable="false">Advantly</string>
+    <string name="installation_error_title">Local data unavailable</string>
+    <string name="installation_error_body">Local data could not be checked. Counting, device sync and account features are paused. Try again to repeat this check. Existing match data is kept.</string>
+    <string name="installation_error_retry">Try again</string>
+    <string name="installation_loading">Checking local data…</string>
+    <!-- Push (Plan Live §3.3): Text entsteht lokal aus Art und Freundes-Cache; ohne Namen neutral -->
+    <string name="push_channel_friends">Friends</string>
+    <string name="push_channel_friends_description">Friend requests and accepted requests</string>
+    <string name="push_channel_matches">Matches</string>
+    <string name="push_channel_matches_description">You were added to a match or invited to watch</string>
+    <string name="push_channel_scoring">Keeping score</string>
+    <string name="push_channel_scoring_description">Requests to keep score, answers and scorer changes</string>
+    <string name="push_friend_request">%1$s wants to be friends</string>
+    <string name="push_friend_request_neutral">You have a new friend request</string>
+    <string name="push_friend_accepted">%1$s accepted your friend request</string>
+    <string name="push_friend_accepted_neutral">Your friend request was accepted</string>
+    <string name="push_player_assigned">%1$s added you to a match</string>
+    <string name="push_player_assigned_neutral">You were added to a match</string>
+    <string name="push_player_claimed">%1$s took over %2$s</string>
+    <string name="push_player_claimed_neutral">A guest was taken over</string>
+    <string name="push_match_shared">%1$s shared a match with you</string>
+    <string name="push_match_shared_neutral">A match was shared with you</string>
+    <string name="push_visitor_invited">%1$s invites you to watch a match</string>
+    <string name="push_visitor_invited_neutral">You were invited to watch a match</string>
+    <string name="push_scorer_invited">%1$s asks you to keep score</string>
+    <string name="push_scorer_invited_neutral">You were asked to keep score</string>
+    <string name="push_scorer_responded">%1$s answered your request to keep score</string>
+    <string name="push_scorer_responded_neutral">Your request to keep score was answered</string>
+    <string name="push_scorer_changed">%1$s changed the scorer of your match</string>
+    <string name="push_scorer_changed_neutral">The scorer of a match changed</string>
+    <string name="push_open">Tap to open</string>
+    <string name="live_relay_channel">Live score</string>
+    <string name="live_relay_channel_description">Shown while your watch keeps score and others follow live</string>
+    <string name="live_relay_title">Sharing live score</string>
+    <string name="live_relay_text">Your watch is keeping score – teammates and spectators see it live.</string>
+    <!-- Uhr-Zuschauen (0.6.3): unbenannte bzw. redigierte Plätze, vom Handy lokalisiert -->
+    <string name="player_slot_n">Player %1$d</string>
+    <string name="player_deleted">Deleted player</string>
+</resources>

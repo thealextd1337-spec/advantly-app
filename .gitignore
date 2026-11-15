@@ -1,0 +1,58 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+.kotlin/
+
+# Lokale Konfiguration (SDK-Pfad, Secrets)
+local.properties
+*.keystore
+*.jks
+!debug.keystore
+# Release-Signierung (Upload-Key, docs/release/play-console.md) – nie einchecken
+*.p12
+*.pepk
+*upload*.properties
+*signing*.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.fleet/
+out/
+
+# Kotlin/Native & Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+iosApp/build/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Logs
+.wrangler/
+*.log
+hs_err_pid*
+
+# XcodeGen-Ausgaben
+iosApp/Generated/
+# aus gradle.properties erzeugt (./gradlew generateAppleVersionConfig)
+iosApp/Config/Version.xcconfig
+
+# P1-Gate-Rohdaten (tools/p1-gate, docs/release/p1-gate-protokoll.md §7): Datenbanken enthalten Spielernamen
+*.db
+# SQLDelight-Schema-Snapshots (verifyMigrations) bleiben versioniert
+!shared/data/src/commonMain/sqldelight/databases/*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.part
+fieldtest*.jsonl
+s5-diag*.log
+p1-gate/
+!tools/p1-gate/

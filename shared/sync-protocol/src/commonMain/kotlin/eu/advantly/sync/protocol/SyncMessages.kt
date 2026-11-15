@@ -1,0 +1,328 @@
+package eu.advantly.sync.protocol
+
+import eu.advantly.core.model.DeviceId
+import eu.advantly.core.model.Discipline
+import eu.advantly.core.model.Lineup
+import eu.advantly.core.model.MatchFormat
+import eu.advantly.core.model.MatchId
+import eu.advantly.core.model.MatchMeta
+import eu.advantly.core.model.Player
+import eu.advantly.core.model.PlayerId
+import eu.advantly.core.model.Sport
+import eu.advantly.core.model.TelemetryPreference
+import eu.advantly.core.model.TelemetryVisibility
+import eu.advantly.core.scoring.ScoreEvent
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * Nachricht des Geräte-Syncs (01 §4.3). JSON: flaches Objekt mit Diskriminator `type` und Protokollversion `v`,
+ * z. B. `{"type":"Summary","v":1,"matches":{"m1":{"watch":3}}}`. Kodierung über [SyncCodec].
+ */
+@Serializable
+sealed interface SyncMessage {
+    /** Protokollversion der Nachricht: mit der Gegenstelle ausgehandelt, `Hello` trägt den eigenen Bereich. */
+    val v: Int
+}
+
+/** Art eines Geräts – nur Anzeige (z. B. „Uhr zählt“, Sync-Pill „Uhr verbunden“). */
+@Serializable
+enum class PeerKind {
+    PHONE,
+    WATCH,
+    OTHER,
+}
+
+/**
+ * Verbindungsaufbau und Versionsprüfung. Wird beim (Wieder-)Verbinden gesendet; der Empfänger antwortet mit
+ * `Summary` (Anti-Entropie) und – falls noch nicht geschehen – mit seinem eigenen `Hello`.
+ *
+ * @property minV älteste Version, die der Absender noch lesen kann
+ * @property activeMatches Matches, die beim Absender gerade offen sind
+ * @property session zufällige Kennung der Session-Instanz; fehlt bei älteren Absendern (Protokoll 3)
+ * @property healthProtocol `1` = der Absender versteht [HealthMessage] (Protokoll 6, Plan Puls §3.5); `null` bei älteren.
+ *   Steht zusätzlich zu [v] im Hello, weil eine Session ohne Konto nur Version 3 spricht.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+@SerialName("Hello")
+data class Hello(
+    val deviceId: DeviceId,
+    val kind: PeerKind,
+    val activeMatches: List<MatchId> = emptyList(),
+    @EncodeDefault val minV: Int = ProtocolVersion.MIN_SUPPORTED,
+    @EncodeDefault override val v: Int = ProtocolVersion.CURRENT,
+    val appBuild: AppBuild? = null,
+    val session: String? = null,
+    val identityProtocol: Int? = null,
+    val ownerContext: OwnerContext? = null,
+    val recipientSession: String? = null,
+    val localSources: List<OwnSource> = emptyList(),
+    val adoptedSources: List<String> = emptyList(),
+    val healthProtocol: Int? = null,
+) : SyncMessage
+
+/**
+ * Anti-Entropie: „Was habe ich?“ je Match als [VersionVector] (01 §4.3 Regel 3). Der Empfänger sendet daraufhin alle
+ * Events, die der Absender laut Vektor nicht hat ([AntiEntropy.missingRanges]).
+ *
+ * @property matches Match-ID (Text) → Versionsvektor
+ * @property reply `true` = Antwort auf ein `Summary` („mir fehlt etwas, bitte nachsenden“); auf eine Antwort wird nie
+ *   erneut mit `Summary` geantwortet (keine Ping-Pong-Schleifen)
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+@SerialName("Summary")
+data class Summary(
+    val matches: Map<String, VersionVector>,
+    val reply: Boolean = false,
+    @EncodeDefault override val v: Int = ProtocolVersion.MIN_SUPPORTED,
+    val lifecycle: Map<String, LifecycleSummary> = emptyMap(),
+    val stamps: Map<String, MatchDataStamp> = emptyMap(),
+) : SyncMessage {
+    init {
+        require(v >= 4 || (lifecycle.isEmpty() && stamps.isEmpty()))
+        require(lifecycle.size <= 200)
+        if (v >= 4) {
+            (matches.keys + lifecycle.keys + stamps.keys).forEach(::requireWireId)
+            require(stamps.keys.containsAll(matches.keys))
+        }
+    }
+
+    /** Vektor für [matchId] oder [VersionVector.EMPTY]. */
+    fun vector(matchId: MatchId): VersionVector = matches[matchId.value] ?: VersionVector.EMPTY
+}
+
+/**
+ * Events eines Matches – Live-Push einzelner Taps und Nachlieferung (Batch). Der Empfang ist idempotent über die
+ * Event-`id` (01 §4.3 Regel 2). Events mit anderer `matchId` als [matchId] verwirft der Empfänger.
+ *
+ * @property more `true` = weitere Teile derselben Nachlieferung folgen. Nur ein Hinweis: Der Empfänger speichert und
+ *   wendet jede Nachricht sofort an (Fold ist reihenfolgeunabhängig).
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+@SerialName("Events")
+data class Events(
+    val matchId: MatchId,
+    val events: List<ScoreEvent>,
+    val more: Boolean = false,
+    @EncodeDefault override val v: Int = ProtocolVersion.MIN_SUPPORTED,
+    val stamp: MatchDataStamp? = null,
+) : SyncMessage {
+    init {
+        require(v >= 4 || stamp == null)
+        if (v >= 4) {
+            requireWireId(matchId.value)
+            require(events.isEmpty() || stamp != null)
+            require(events.all { it.matchId == matchId })
+        }
+    }
+}
+
+/**
+ * Match-Kopf und Favoriten-Lineups (01 §4.3), damit die Uhr ein Match anzeigen, starten oder fortsetzen kann.
+ * Der Zählstand kommt nie hierüber, sondern immer aus den Events.
+ *
+ * @property match Kopf des Matches oder `null` (nur Spieler/Favoriten)
+ * @property players Anzeigenamen der Spieler aus Lineup und Favoriten
+ * @property favorites Favoriten-Lineups („Wie letztes Mal“, Schnellstart auf der Uhr)
+ * @property self eigener Spieler des Absenders („Ich“). Das Handy ist Identitätsquelle: Eine Uhr übernimmt den `self`
+ *   eines Handys als ihren eigenen Spieler; ein Handy merkt sich den `self` anderer eigener Geräte als Alias (W1-I).
+ *   `null` bei älteren Absendern.
+ * @property placeholderIds dauerhaft migrierte Uhr-Slot-IDs; dürfen nie als Gäste importiert werden
+ * @property recentPlayers höchstens 24 zuletzt gespielte Personen vom Handy, ohne Self/Platzhalter; null = kein Verzeichnis-Update
+ * @property selfAliases frühere bzw. bekannte andere IDs desselben Besitzers (z. B. der Uhr-eigene Spieler vor der
+ *   Übernahme) – Matches mit diesen IDs zeigen den Besitzer, keinen Gast
+ * @property watchMatch nur vom Handy: welches seiner (ggf. mehreren) offenen Matches die eigene Uhr zählt bzw. anzeigt
+ *   (F22, 01 §4.3 „Uhr-Match“); `null` = keine Angabe (Uhr, ältere Absender)
+ * @property telemetry Telemetrie-Sichtbarkeit des Besitzers (P2-J, F19/F29) mit Änderungszeit, von Handy **und** Uhr;
+ *   `null` = nie geändert bzw. älterer Absender (Empfänger behält seinen Wert)
+ * @property healthConsent Einwilligung „Pulsverlauf aufzeichnen“ (Plan Puls §4), gleiche Regel wie [telemetry]; additiv
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+@SerialName("MatchMeta")
+data class MatchMetaMessage(
+    val match: MatchHeader? = null,
+    val players: List<Player> = emptyList(),
+    val favorites: List<FavoriteLineup> = emptyList(),
+    val self: Player? = null,
+    val selfAliases: List<PlayerId> = emptyList(),
+    val placeholderIds: List<PlayerId> = emptyList(),
+    val recentPlayers: List<Player>? = null,
+    /** Additiv in Protokoll 3: nur IDs, damit lokale Uhr-Historie entfernte Gäste nicht erneut anbietet. */
+    val archivedPlayerIds: List<PlayerId> = emptyList(),
+    val watchMatch: WatchAssignment? = null,
+    /** Additiv in Protokoll 3 (P2-J): ältere Geräte ignorieren das unbekannte Feld (`ignoreUnknownKeys`). */
+    val telemetry: TelemetrySetting? = null,
+    @EncodeDefault override val v: Int = ProtocolVersion.MIN_SUPPORTED,
+    val stamp: MatchDataStamp? = null,
+    val healthConsent: HealthConsentSetting? = null,
+    /**
+     * Additiv in Protokoll 6 (Review H6): Zeitpunkt von „Alle Gesundheitsdaten löschen“ am Handy (Wanduhr-ms). Die Uhr löscht
+     * alle Serien, die vorher begonnen haben; ältere Uhren ignorieren das Feld.
+     */
+    val healthDeletedBefore: Long? = null,
+) : SyncMessage {
+    init {
+        require(v >= 4 || stamp == null)
+        if (v >= 4) {
+            require(match == null || stamp != null)
+            match?.let { requireWireId(it.matchId.value) }
+        }
+    }
+}
+
+/**
+ * Telemetrie-Sichtbarkeit auf dem Draht (P2-J). [visibility] bleibt bewusst ein Text (`share`/`private`/`off`): Ein
+ * unbekannter Wert einer künftigen Version macht nur diese Angabe unbrauchbar ([toPreference] = `null`), nie die ganze
+ * `MatchMeta`-Nachricht. Konstante Größe (Lamport-Zähler statt Versionsvektor).
+ *
+ * @property counter Lamport-Zähler der Änderung (> 0), Konfliktregel [TelemetryPreference.merge]
+ * @property origin Installations-ID des ändernden Geräts
+ */
+@Serializable
+data class TelemetrySetting(
+    val visibility: String,
+    val counter: Long = 0,
+    val origin: String = "",
+) {
+    /** Gültige Einstellung oder `null` (unbekannter Wert, kein Zähler, leere/zu lange Herkunft, altes Format). */
+    fun toPreference(): TelemetryPreference? {
+        val value = TelemetryVisibility.fromWire(visibility) ?: return null
+        val valid = counter > 0 && origin.isNotBlank() && origin.length <= MAX_ORIGIN
+        return if (valid) TelemetryPreference(value, counter, origin) else null
+    }
+
+    companion object {
+        const val MAX_ORIGIN: Int = 64
+
+        /** Nur geänderte Einstellungen gehen auf den Draht; der Standard braucht keine Nachricht. */
+        fun of(preference: TelemetryPreference): TelemetrySetting? {
+            val origin = preference.origin
+            return if (preference.isDefault ||
+                origin == null
+            ) {
+                null
+            } else {
+                TelemetrySetting(preference.visibility.wire, preference.counter, origin)
+            }
+        }
+    }
+}
+
+/**
+ * Zuweisung des „Uhr-Matches“ durch das Handy (F22, 01 §4.3): Das Handy kann mehrere Matches parallel führen, die eigene
+ * Uhr zählt bzw. zeigt höchstens eines davon. Die Uhr folgt nur diesem Match (kein Auto-Follow auf andere Matches des
+ * Handys). Zuweisungen desselben Handys werden über [assignedAtMs] geordnet (die jüngste gilt; ältere, z. B. durch
+ * Wiederholung verspätet zugestellte, ignoriert die Uhr).
+ *
+ * @property matchId das Uhr-Match; `null` = die Uhr ist frei (folgt keinem Match des Handys)
+ * @property assignedAtMs Wanduhr des Handys bei der Zuweisung (Ordnung der Zuweisungen; bei [explicit] zusätzlich die
+ *   Grenze, ab der ein auf der Uhr gestartetes Match als jünger gilt)
+ * @property explicit vom Nutzer gewählt („Meine Uhr“, „Auf der Uhr zählen“): Die Uhr folgt ihr auch weg von einem auf ihr
+ *   gestarteten Match, das vor der Zuweisung begann; implizite Zuweisungen (freie Uhr, Folge-Match, Uhr-Start) unterliegen
+ *   der Rennregel „jüngeres Uhr-Match gewinnt“ (01 §4.9)
+ * @property handOverTo Abgabe-Auftrag (plan-live-mitspieler §3.4, additiv in Protokoll 6): Zählt die Uhr [matchId], gibt
+ *   sie selbst per `ScorerChanged` an dieses Gerät ab – nach ihrer letzten Eingabe, damit offline gezählte Uhr-Punkte
+ *   gültig bleiben. Ältere Uhren ignorieren das Feld (die Abgabe wartet dann). `null` = kein Auftrag
+ */
+@Serializable
+data class WatchAssignment(
+    val matchId: MatchId?,
+    val assignedAtMs: Long,
+    val explicit: Boolean = false,
+    val handOverTo: DeviceId? = null,
+)
+
+/**
+ * Löschmarkierungen (Tombstones): Diese Matches wurden auf einem gekoppelten Gerät gelöscht. Der Empfänger löscht sie
+ * ebenfalls (ein offenes wird geschlossen) und ignoriert danach dauerhaft alle Events und Köpfe dazu. Wird bei jedem
+ * `Hello` vollständig gesendet und beim Löschen sofort. P1: nur eigene Geräte; P2 (geteilte Matches): Löschen betrifft
+ * nur die eigene Sicht.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+@SerialName("Deleted")
+data class Deleted(
+    val matches: List<DeletedMatch>,
+    @EncodeDefault override val v: Int = ProtocolVersion.MIN_SUPPORTED,
+    val stamps: Map<String, MatchDataStamp> = emptyMap(),
+) : SyncMessage {
+    init {
+        require(v >= 4 || stamps.isEmpty())
+        if (v >= 4) {
+            stamps.keys.forEach(::requireWireId)
+            matches.forEach { requireWireId(it.matchId.value) }
+            require(matches.all { it.matchId.value in stamps })
+        }
+    }
+}
+
+/** Ein gelöschtes Match mit Zeitpunkt der Löschung (Wanduhr des löschenden Geräts). */
+@Serializable
+data class DeletedMatch(
+    val matchId: MatchId,
+    val deletedAtMs: Long,
+)
+
+/**
+ * Unveränderlicher Kopf eines Matches. Format, Besetzung und Metadaten stehen zusätzlich in der Genesis (`MatchCreated`);
+ * hier kommen die Daten dazu, die nicht im Event-Log stehen.
+ *
+ * @property previousMatchId Vorgänger bei einem verknüpften Folge-Match (02 §5.2)
+ */
+@Serializable
+data class MatchHeader(
+    val matchId: MatchId,
+    val format: MatchFormat,
+    val lineup: Lineup,
+    val meta: MatchMeta = MatchMeta(),
+    val createdAtMs: Long,
+    val previousMatchId: MatchId? = null,
+)
+
+/**
+ * Favoriten-Lineup auf dem Draht. [id] ist auf allen Geräten gleich (abgeleitet aus Sport, Disziplin und Besetzung),
+ * damit wiederholte Übertragungen idempotent sind.
+ */
+@Serializable
+data class FavoriteLineup(
+    val id: String,
+    val sport: Sport,
+    val discipline: Discipline,
+    val a: List<PlayerId>,
+    val b: List<PlayerId>,
+    val name: String? = null,
+    val lastUsedAtMs: Long = 0,
+    val useCount: Int = 0,
+)
+
+/** Nur die gekoppelte Phone-Instanz vergibt Epochen; Account-IDs werden nicht übertragen. */
+@Serializable
+data class OwnerContext(
+    val authority: String,
+    val epoch: Long,
+    val scope: String,
+)
+
+/** Direkter Herkunftsnachweis des eigenen lokalen Stores, niemals importierte Self-Aliase. */
+@Serializable
+data class OwnSource(
+    val deviceId: String,
+    val selfId: String,
+    val scope: String,
+    val kind: String,
+    val eventCount: Long = 0,
+)
+
+/** Vor jeder Mutation prüfen, einschließlich Summary, Löschung, Metadaten und Events. */
+@Serializable
+data class IdentityEnvelope(
+    val context: OwnerContext,
+    val senderSession: String,
+    val recipientSession: String,
+)

@@ -1,0 +1,375 @@
+package eu.advantly.ui.phone.home
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import eu.advantly.core.scoring.MatchStatus
+import eu.advantly.presentation.match.FavoriteLineup
+import eu.advantly.presentation.match.HealthRecords
+import eu.advantly.presentation.match.LiveMatchSnapshot
+import eu.advantly.presentation.match.MatchSetup
+import eu.advantly.presentation.match.MatchSummary
+import eu.advantly.presentation.match.WallClock
+import eu.advantly.presentation.match.isRated
+import eu.advantly.presentation.stats.HistoryOutcome
+import eu.advantly.presentation.stats.gamesWon
+import eu.advantly.presentation.stats.outcome
+import eu.advantly.ui.phone.app.AdvantlyAppModel
+import eu.advantly.ui.phone.common.AdvantlyCard
+import eu.advantly.ui.phone.common.SectionTitle
+import eu.advantly.ui.phone.common.SportIcon
+import eu.advantly.ui.phone.common.StatTile
+import eu.advantly.ui.phone.common.durationText
+import eu.advantly.ui.phone.common.formatDescription
+import eu.advantly.ui.phone.common.formatLabel
+import eu.advantly.ui.phone.common.sportColor
+import eu.advantly.ui.phone.common.sportName
+import eu.advantly.ui.phone.common.teamName
+import eu.advantly.ui.phone.designsystem.AdvantlyIcons
+import eu.advantly.ui.phone.designsystem.AdvantlyTheme
+import eu.advantly.ui.phone.designsystem.Radii
+import eu.advantly.ui.phone.designsystem.Spacing
+import eu.advantly.ui.phone.history.HistoryItem
+import eu.advantly.ui.phone.live.OpenMatchCardContent
+import eu.advantly.ui.phone.platform.formatCount
+import eu.advantly.ui.phone.resources.Res
+import eu.advantly.ui.phone.resources.home_empty
+import eu.advantly.ui.phone.resources.home_greeting
+import eu.advantly.ui.phone.resources.home_greeting_named
+import eu.advantly.ui.phone.resources.home_like_last_time
+import eu.advantly.ui.phone.resources.home_new_match
+import eu.advantly.ui.phone.resources.home_new_match_parallel
+import eu.advantly.ui.phone.resources.home_new_match_sub
+import eu.advantly.ui.phone.resources.home_open_matches
+import eu.advantly.ui.phone.resources.home_ready
+import eu.advantly.ui.phone.resources.home_remove_favorite
+import eu.advantly.ui.phone.resources.home_resume
+import eu.advantly.ui.phone.resources.home_resume_finished
+import eu.advantly.ui.phone.resources.home_section_favorites
+import eu.advantly.ui.phone.resources.home_section_quick
+import eu.advantly.ui.phone.resources.home_section_recent
+import eu.advantly.ui.phone.resources.home_section_total
+import eu.advantly.ui.phone.resources.home_section_week
+import eu.advantly.ui.phone.resources.home_total_bpm
+import eu.advantly.ui.phone.resources.home_total_games
+import eu.advantly.ui.phone.resources.home_total_matches
+import eu.advantly.ui.phone.resources.home_total_max_pulse
+import eu.advantly.ui.phone.resources.home_total_max_steps
+import eu.advantly.ui.phone.resources.home_versus
+import eu.advantly.ui.phone.resources.home_week_matches
+import eu.advantly.ui.phone.resources.home_week_time
+import eu.advantly.ui.phone.resources.home_week_wins
+import eu.advantly.ui.phone.resources.stats_not_recorded
+import eu.advantly.ui.phone.resources.support_feedback
+import eu.advantly.ui.phone.resources.support_open
+import org.jetbrains.compose.resources.stringResource
+
+private const val WEEK_MS = 7L * 24 * 60 * 60 * 1000
+private const val RECENT_MATCHES = 5
+
+/**
+ * H1 Start (04 §4.1): Begrüßung, Übersicht der offenen Matches (F22: mehrere Plätze, Kennzeichnung des Uhr-Matches),
+ * „Neues Match“ (auch während andere laufen), Schnellstart („Wie letztes Mal“, Favoriten), Gesamtstatistik, Wochenbilanz
+ * und die letzten fünf Matches aus dem Verlauf (jeweils ohne abgebrochene Matches, F21).
+ */
+@Composable
+fun HomeScreen(
+    model: AdvantlyAppModel,
+    modifier: Modifier = Modifier,
+    clock: WallClock = WallClock.System,
+    onSupport: (() -> Unit)? = null,
+    watchInstall: WatchInstallHost? = null,
+    /** Laufende Fremd-Matches als „Live“ (nur mit Konto); PR 0 öffnet sie nicht mehr als Fortsetzen-Karte. */
+    live: @Composable () -> Unit = {},
+) {
+    val self by model.players.self.collectAsState()
+    val open by model.live.openMatches.collectAsState()
+    val last by model.players.lastSetup.collectAsState()
+    val favorites by model.players.favorites.collectAsState()
+    val history by model.history.matches.collectAsState()
+    val healthRecords by model.health.records.collectAsState()
+    val runningCount = open.count { it.isRunning }
+    Column(
+        modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = Spacing.screenEdgeCompact)
+            .testTag("home"),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (self.displayName.isBlank()) {
+                    stringResource(
+                        Res.string.home_greeting,
+                    )
+                } else {
+                    stringResource(Res.string.home_greeting_named, self.displayName)
+                },
+                style = AdvantlyTheme.typography.headline,
+                color = AdvantlyTheme.colors.text,
+                modifier = Modifier.weight(1f).padding(top = Spacing.xl, bottom = Spacing.l).semantics { heading() },
+            )
+            WatchStatusIndicator(model.live)
+            if (onSupport != null) {
+                val supportDescription = stringResource(Res.string.support_open)
+                FilledTonalButton(
+                    onClick = onSupport,
+                    modifier =
+                        Modifier
+                            .padding(start = Spacing.s)
+                            .testTag("home_support")
+                            .semantics { contentDescription = supportDescription },
+                ) {
+                    Text(stringResource(Res.string.support_feedback))
+                }
+            }
+        }
+        watchInstall?.let { WatchInstallHint(it, model.live) }
+        WatchUpdateHint(model.live, watchInstall)
+        if (open.size > 1) SectionTitle(stringResource(Res.string.home_open_matches, runningCount))
+        open.forEachIndexed { index, snapshot ->
+            ResumeCard(snapshot, if (index == 0) "resume_card" else "resume_card_$index", onClick = { model.openMatch(snapshot.matchId) })
+        }
+        live()
+        // Neues Match auch während laufender Matches (F22): sie laufen weiter, nichts wird abgebrochen
+        NewMatchHero(parallel = runningCount > 0, onClick = model::onPlay)
+        if (last != null || favorites.isNotEmpty()) {
+            SectionTitle(stringResource(Res.string.home_section_quick))
+            last?.let { setup ->
+                QuickStartCard(
+                    setup = setup,
+                    title = stringResource(Res.string.home_like_last_time),
+                    tag = "quick_last",
+                    onStart = { model.startMatch(setup) },
+                )
+            }
+            if (favorites.isNotEmpty()) SectionTitle(stringResource(Res.string.home_section_favorites))
+            favorites.forEachIndexed { index, favorite ->
+                FavoriteCard(favorite, index, onStart = { model.startMatch(favorite.setup) }, onRemove = {
+                    model.players.removeFavorite(favorite.id)
+                })
+            }
+        }
+        val rated = history.filter { it.isRated }
+        // Reihenfolge laut Nutzerwunsch (02.11.): Wochenbilanz, Gesamtstatistik, direkt darunter die letzten Spiele
+        WeekSummary(rated, clock.nowMs())
+        TotalSummary(rated, healthRecords)
+        if (rated.isNotEmpty()) {
+            SectionTitle(stringResource(Res.string.home_section_recent))
+            Column(Modifier.testTag("recent_matches"), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                // Verlaufszeile ohne eigenen Seitenrand: der Startbildschirm hat ihn schon
+                rated.take(RECENT_MATCHES).forEachIndexed { index, match ->
+                    HistoryItem(match, index, onClick = { model.openResult(match.matchId) }, tag = "recent_item_$index", edgePadding = 0.dp)
+                }
+            }
+        }
+        if (history.isEmpty() && open.isEmpty()) {
+            Text(
+                stringResource(Res.string.home_empty),
+                style = AdvantlyTheme.typography.body,
+                color = AdvantlyTheme.colors.text2,
+                modifier = Modifier.padding(vertical = Spacing.l),
+            )
+        }
+    }
+}
+
+/** Karte eines offenen Matches: Status, Teams, Stand, wer zählt, Uhr-Kennzeichnung; Tipp → Live-Ansicht. */
+@Composable
+private fun ResumeCard(
+    snapshot: LiveMatchSnapshot,
+    tag: String,
+    onClick: () -> Unit,
+) {
+    val finished = snapshot.state.status == MatchStatus.FINISHED
+    AdvantlyCard(Modifier.testTag(tag).padding(bottom = Spacing.m), onClick = onClick, border = AdvantlyTheme.colors.brand) {
+        Text(
+            stringResource(if (finished) Res.string.home_resume_finished else Res.string.home_resume).uppercase(),
+            style = AdvantlyTheme.typography.overline,
+            color = AdvantlyTheme.colors.brand,
+        )
+        OpenMatchCardContent(snapshot)
+    }
+}
+
+/** Primäraktion „Neues Match“ (Mockup H1 Hero); [parallel] = weitere Matches laufen (Hinweis „laufen weiter“). */
+@Composable
+private fun NewMatchHero(
+    parallel: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = AdvantlyTheme.colors
+    Column(
+        Modifier
+            .testTag("home_new_match")
+            .fillMaxWidth()
+            .heightIn(min = 120.dp)
+            .background(colors.brand, Radii.sheetShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(Spacing.xl),
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+    ) {
+        Text(stringResource(Res.string.home_ready).uppercase(), style = AdvantlyTheme.typography.overline, color = colors.onBrand)
+        Text(stringResource(Res.string.home_new_match), style = AdvantlyTheme.typography.headline, color = colors.onBrand)
+        Text(
+            stringResource(if (parallel) Res.string.home_new_match_parallel else Res.string.home_new_match_sub),
+            style = AdvantlyTheme.typography.body,
+            color = colors.onBrand,
+        )
+    }
+}
+
+/** Ein-Tap-Start: Sport, Gegner, Format. */
+@Composable
+private fun QuickStartCard(
+    setup: MatchSetup,
+    title: String,
+    tag: String,
+    onStart: () -> Unit,
+    trailing: @Composable () -> Unit = {
+        Icon(AdvantlyIcons.Replay, contentDescription = null, tint = AdvantlyTheme.colors.text2)
+    },
+) {
+    val sport = setup.sport
+    Row(
+        Modifier
+            .testTag(tag)
+            .padding(bottom = Spacing.s)
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .background(sportColor(sport).copy(alpha = 0.10f), Radii.cardShape)
+            .clickable(role = Role.Button, onClick = onStart)
+            .padding(horizontal = Spacing.l, vertical = Spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.m),
+    ) {
+        SportIcon(sport, size = 28.dp)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = AdvantlyTheme.typography.label, color = AdvantlyTheme.colors.text)
+            Text(
+                stringResource(sportName(sport)) + " · " + formatLabel(setup.format) + " · " +
+                    stringResource(Res.string.home_versus, teamName(setup, setup.ownSide.other)),
+                style = AdvantlyTheme.typography.caption,
+                color = AdvantlyTheme.colors.text2,
+            )
+            if (setup.format.presetId == null) {
+                Text(formatDescription(setup.format), style = AdvantlyTheme.typography.caption, color = AdvantlyTheme.colors.text2)
+            }
+        }
+        trailing()
+    }
+}
+
+@Composable
+private fun FavoriteCard(
+    favorite: FavoriteLineup,
+    index: Int,
+    onStart: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val setup = favorite.setup
+    val removeLabel = stringResource(Res.string.home_remove_favorite)
+    QuickStartCard(
+        setup = setup,
+        title = stringResource(sportName(setup.sport)),
+        tag = "quick_fav_$index",
+        onStart = onStart,
+        trailing = {
+            Box(
+                Modifier
+                    .testTag("quick_fav_remove_$index")
+                    .size(Spacing.minTouchTarget)
+                    .clickable(role = Role.Button, onClick = onRemove)
+                    .semantics { contentDescription = removeLabel },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(AdvantlyIcons.Close, contentDescription = null, tint = AdvantlyTheme.colors.text2)
+            }
+        },
+    )
+}
+
+/**
+ * Gesamtstatistik über alle gewerteten Matches: Matches, gewonnene Games ([gamesWon]) sowie Puls- und Schritt-Höchstwerte
+ * aus der Gesundheitsaufzeichnung („—“ ohne Daten).
+ */
+@Composable
+private fun TotalSummary(
+    rated: List<MatchSummary>,
+    health: HealthRecords,
+) {
+    if (rated.isEmpty()) return
+    val none = stringResource(Res.string.stats_not_recorded)
+    SectionTitle(stringResource(Res.string.home_section_total))
+    Column(Modifier.testTag("total_summary"), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            StatTile(rated.size.toString(), stringResource(Res.string.home_total_matches), Modifier.weight(1f).testTag("total_matches"))
+            StatTile(
+                rated.sumOf { it.gamesWon }.toString(),
+                stringResource(Res.string.home_total_games),
+                Modifier.weight(1f).testTag("total_games"),
+            )
+        }
+        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            StatTile(
+                health.maxBpm?.let { stringResource(Res.string.home_total_bpm, it) } ?: none,
+                stringResource(Res.string.home_total_max_pulse),
+                Modifier.weight(1f).fillMaxHeight().testTag("total_max_pulse"),
+                labelLines = 2,
+            )
+            StatTile(
+                health.maxStepsInSet?.let(::formatCount) ?: none,
+                stringResource(Res.string.home_total_max_steps),
+                Modifier.weight(1f).fillMaxHeight().testTag("total_max_steps"),
+                labelLines = 2,
+            )
+        }
+    }
+}
+
+/** Wochenbilanz (letzte 7 Tage): Matches, Siege, Spielzeit. */
+@Composable
+private fun WeekSummary(
+    history: List<MatchSummary>,
+    nowMs: Long,
+) {
+    val week = history.filter { nowMs - it.finishedAtMs <= WEEK_MS }
+    if (week.isEmpty()) return
+    SectionTitle(stringResource(Res.string.home_section_week))
+    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s), modifier = Modifier.testTag("week_summary")) {
+        StatTile(week.size.toString(), stringResource(Res.string.home_week_matches), Modifier.weight(1f))
+        StatTile(
+            week.count { it.outcome() == HistoryOutcome.WIN }.toString(),
+            stringResource(Res.string.home_week_wins),
+            Modifier.weight(1f),
+        )
+        StatTile(durationText(week.sumOf { it.durationMs }), stringResource(Res.string.home_week_time), Modifier.weight(1f))
+    }
+}

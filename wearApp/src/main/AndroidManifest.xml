@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <!-- 05 §2.2, §6.2: Live-Puls im Workout; gespeichert nur mit Einwilligung „Pulsverlauf aufzeichnen“ (Plan Puls §4), nur lokal. Wear OS 6 (API 36) ersetzt BODY_SENSORS durch health.READ_HEART_RATE. -->
+    <uses-permission
+        android:name="android.permission.BODY_SENSORS"
+        android:maxSdkVersion="35" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <!-- Schritte (ExerciseClient) -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <!-- Foreground Service Typ health + Ongoing-Activity-Benachrichtigung -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Always-on/Ambient (AmbientLifecycleObserver) laut Wear-Doku -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Haptik (04 §5.8) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:name=".AdvantlyWearApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault">
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+        <!-- singleTask: Tipp auf die Ongoing Activity führt in dieselbe Instanz zurück. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Advantly.Scoring">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".glance.MatchTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/glance_tile_label"
+            android:description="@string/glance_tile_description"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data android:name="androidx.wear.tiles.PREVIEW" android:resource="@drawable/tile_preview" />
+        </service>
+
+        <service
+            android:name=".glance.MatchComplicationService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_advantly"
+            android:label="@string/glance_complication_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data android:name="android.support.wearable.complications.SUPPORTED_TYPES" android:value="SHORT_TEXT,LONG_TEXT" />
+            <meta-data android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS" android:value="0" />
+        </service>
+
+        <service
+            android:name=".workout.WorkoutService"
+            android:exported="false"
+            android:foregroundServiceType="health" />
+
+        <!-- Hintergrund-Empfang (Wear Data Layer): Matches/Events/Löschmarkierungen vom Handy, auch wenn die App nicht
+             läuft. Pfade wie WearDataLayerTransport (MESSAGE_PATH, QUEUE_PREFIX, CAPABILITY). -->
+        <service
+            android:name=".sync.SyncListenerService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data
+                    android:host="*"
+                    android:path="/advantly/telemetry/subscribe"
+                    android:scheme="wear" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data
+                    android:host="*"
+                    android:path="/advantly/live/views"
+                    android:scheme="wear" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data
+                    android:host="*"
+                    android:path="/advantly/link/v1"
+                    android:scheme="wear" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
+                <data
+                    android:host="*"
+                    android:pathPrefix="/advantly/link/q"
+                    android:scheme="wear" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.CAPABILITY_CHANGED" />
+                <data
+                    android:host="*"
+                    android:path="/advantly_device_link"
+                    android:scheme="wear" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

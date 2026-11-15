@@ -1,0 +1,213 @@
+package eu.advantly.presentation.push
+
+import eu.advantly.cloud.sync.CloudException
+import eu.advantly.cloud.sync.CloudSession
+import eu.advantly.cloud.sync.ConsentStatus
+import eu.advantly.cloud.sync.PushTokenPort
+import kotlinx.coroutines.runBlocking
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+private const val MATCH = "0190a5f2-1111-7000-8000-000000000001"
+private const val ALEX = "0190a5f2-2222-7000-8000-000000000002"
+
+class PushRegistrationTest {
+    private class Prefs : PushPreferences {
+        override var enabled = false
+        override var uploaded: String? = null
+    }
+
+    private class Rig {
+        val prefs = Prefs()
+        val log = mutableListOf<String>()
+        var token = "t1"
+        var session: CloudSession? = CloudSession("alice", true, consentStatus = ConsentStatus.CURRENT)
+        var serverDown = false
+        val tokens =
+            object : PushTokenSource {
+                override suspend fun token(): String = token.also { log += "token" }
+
+                override suspend fun delete() {
+                    log += "delete"
+                    token = "t" + (token.drop(1).toInt() + 1)
+                }
+            }
+        val port =
+            object : PushTokenPort {
+                override suspend fun setPushToken(
+                    profileId: String,
+                    provider: String,
+                    token: String?,
+                ) {
+                    if (serverDown) throw CloudException("connection_failed", false)
+                    log += "set:$profileId:$provider:$token"
+                }
+            }
+
+        fun registration() = PushRegistration(prefs, tokens, port) { session }
+    }
+
+    /** Stiller Abgleich: Das Token kommt auch mit ausgeschalteter Anzeige hoch. */
+    @Test fun tokenIsUploadedWhileDisplayIsOff(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            assertFalse(push.enabled.value)
+            push.sync()
+            assertEquals(listOf("token", "set:alice:fcm:t1"), rig.log)
+            assertEquals("alice\nt1", rig.prefs.uploaded)
+            assertFalse(push.enabled.value)
+        }
+
+    @Test fun consentUploadsOnceAndNewTokensAgain(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            push.enable()
+            assertTrue(push.enabled.value)
+            push.sync()
+            rig.token = "t7"
+            push.sync()
+            assertEquals(listOf("token", "set:alice:fcm:t1", "token", "token", "set:alice:fcm:t7"), rig.log)
+            // Neuer Prozess (App-Start): dasselbe Token wird erneut gesetzt (last_seen_at, 180-Tage-Regel).
+            rig.log.clear()
+            rig.registration().sync()
+            assertEquals(listOf("token", "set:alice:fcm:t7"), rig.log)
+        }
+
+    @Test fun noUploadWithoutUsableSession(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            for (session in listOf(
+                null,
+                CloudSession("alice", false, consentStatus = ConsentStatus.CURRENT),
+                CloudSession("alice", true, consentStatus = ConsentStatus.REQUIRED),
+                CloudSession("alice", true, consentStatus = ConsentStatus.CURRENT, suspended = true),
+                CloudSession("alice", true, deletionRequested = true, consentStatus = ConsentStatus.CURRENT),
+            )) {
+                rig.session = session
+                push.enable()
+            }
+            assertEquals(emptyList(), rig.log)
+        }
+
+    @Test fun switchingOffKeepsTheTokenSigningOutClearsIt(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            push.enable()
+            rig.log.clear()
+            push.disable()
+            assertEquals(emptyList(), rig.log, "nur die Anzeige ist aus")
+            assertEquals("alice\nt1", rig.prefs.uploaded)
+            assertFalse(rig.prefs.enabled)
+            push.sync()
+            assertEquals(listOf("token"), rig.log, "bestätigtes Token wird nicht erneut gesetzt")
+            rig.log.clear()
+            push.disable(signedOut = true)
+            assertEquals(listOf("delete", "set:alice:fcm:null"), rig.log)
+            assertNull(rig.prefs.uploaded)
+        }
+
+    @Test fun failedClearIsRetriedAfterDeletionRequestAndReplacedAfterSignIn(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            push.enable()
+            rig.serverDown = true
+            rig.log.clear()
+            push.disable(signedOut = true)
+            assertEquals(listOf("delete"), rig.log, "M1: lokal sofort aus (Token gelöscht), auch ohne Server")
+            assertEquals("alice\nt1", rig.prefs.uploaded, "Server-Bereinigung bleibt vorgemerkt")
+            // Löschantrag: Die Sitzung gilt weiter, der nächste Abgleich holt das Leeren nach.
+            rig.session = CloudSession("alice", true, deletionRequested = true, consentStatus = ConsentStatus.CURRENT)
+            rig.serverDown = false
+            rig.log.clear()
+            push.sync()
+            assertEquals(listOf("delete", "set:alice:fcm:null"), rig.log, "beim nächsten Abgleich nachgeholt")
+            assertNull(rig.prefs.uploaded)
+
+            rig.session = CloudSession("alice", true, consentStatus = ConsentStatus.CURRENT)
+            push.sync()
+            rig.serverDown = true
+            push.disable(signedOut = true)
+            assertEquals("alice\nt3", rig.prefs.uploaded)
+            // Abgemeldet: kein Server-Zugriff mehr; nach erneuter Anmeldung ersetzt das neue Token das alte.
+            rig.session = null
+            rig.serverDown = false
+            rig.log.clear()
+            push.sync()
+            assertEquals(emptyList(), rig.log)
+            rig.session = CloudSession("alice", true, consentStatus = ConsentStatus.CURRENT)
+            push.sync()
+            assertEquals(listOf("token", "set:alice:fcm:t4"), rig.log)
+            assertEquals("alice\nt4", rig.prefs.uploaded)
+        }
+
+    @Test fun accountSwitchRotatesTheTokenBeforeUploading(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            push.enable()
+            rig.session = CloudSession("bob", true, consentStatus = ConsentStatus.CURRENT)
+            rig.log.clear()
+            push.sync()
+            assertEquals(listOf("delete", "token", "set:bob:fcm:t2"), rig.log)
+        }
+
+    /** Abmelden schaltet die Anzeige aus und leert das Token; Ausschalten allein lässt das Token stehen. */
+    @Test fun signingOutTurnsTheDisplayOffAndClearsTheToken(): Unit =
+        runBlocking {
+            val rig = Rig()
+            val push = rig.registration()
+            push.enable()
+            push.disable()
+            assertFalse(push.enabled.value)
+            assertEquals("alice\nt1", rig.prefs.uploaded)
+            push.disable(signedOut = true)
+            assertFalse(push.enabled.value)
+            assertNull(rig.prefs.uploaded)
+        }
+
+    @Test fun parsesOnlyKnownVersionAndKindsAndValidIds() {
+        assertEquals(
+            PushMessage(PushKind.SCORER_INVITED, MATCH, ALEX),
+            PushMessage.parse(mapOf("v" to "1", "kind" to "scorer_invited", "matchId" to MATCH, "profileId" to ALEX, "role" to "scorer")),
+        )
+        assertNull(PushMessage.parse(mapOf("v" to "2", "kind" to "friend_request")))
+        // plan-einladungen E8: Einlöser + eigener Gast, Text entsteht lokal.
+        assertEquals(
+            PushMessage(PushKind.PLAYER_CLAIMED, profileId = ALEX, playerId = MATCH),
+            PushMessage.parse(mapOf("v" to "1", "kind" to "player_claimed", "profileId" to ALEX, "playerId" to MATCH)),
+        )
+        assertEquals(PushChannel.FRIENDS, PushKind.PLAYER_CLAIMED.channel)
+        assertNull(PushMessage.parse(mapOf("v" to "1", "kind" to "point_scored")))
+        assertEquals(
+            PushMessage(PushKind.MATCH_SHARED),
+            PushMessage.parse(mapOf("v" to "1", "kind" to "match_shared", "matchId" to "../evil", "profileId" to "")),
+        )
+    }
+
+    @Test fun everyKindHasChannelAndTarget() {
+        val expected =
+            mapOf(
+                PushKind.FRIEND_REQUEST to PushTarget(FriendsSection.REQUESTS),
+                PushKind.FRIEND_ACCEPTED to PushTarget(FriendsSection.FRIENDS),
+                PushKind.PLAYER_ASSIGNED to PushTarget(FriendsSection.FEED, MATCH),
+                PushKind.MATCH_SHARED to PushTarget(FriendsSection.LIVE, MATCH),
+                PushKind.VISITOR_INVITED to PushTarget(FriendsSection.LIVE, MATCH),
+                PushKind.SCORER_INVITED to PushTarget(FriendsSection.LIVE, MATCH),
+                PushKind.SCORER_RESPONDED to PushTarget(FriendsSection.LIVE, MATCH),
+                PushKind.SCORER_CHANGED to PushTarget(FriendsSection.LIVE, MATCH),
+                PushKind.PLAYER_CLAIMED to PushTarget(FriendsSection.FRIENDS),
+            )
+        assertEquals(PushKind.entries.toSet(), expected.keys, "jede Art hat ein festgelegtes Ziel")
+        for ((kind, target) in expected) assertEquals(target, PushMessage(kind, MATCH, ALEX).target, kind.name)
+        assertEquals(PushChannel.SCORING, PushKind.SCORER_RESPONDED.channel)
+        assertEquals(PushChannel.MATCHES, PushKind.VISITOR_INVITED.channel)
+    }
+}

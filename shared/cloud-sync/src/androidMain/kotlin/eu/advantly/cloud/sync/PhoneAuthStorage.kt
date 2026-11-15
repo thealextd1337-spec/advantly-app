@@ -1,0 +1,149 @@
+@file:Suppress("DEPRECATION") // EncryptedSharedPreferences ist hier ausdrücklich für Keystore-gebundene Sitzungsspeicherung gewählt.
+
+package eu.advantly.cloud.sync
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import io.github.jan.supabase.auth.SessionManager
+import io.github.jan.supabase.auth.exception.NoSessionFoundException
+import io.github.jan.supabase.auth.user.UserSession
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.security.SecureRandom
+import java.util.Base64
+import java.util.UUID
+
+/** Kein Fallback auf Klartext; Keystore-/Dateifehler brechen die Cloud-Initialisierung ab, lokales Zählen bleibt möglich. */
+class PhoneAuthStorage(
+    context: Context,
+    /** Backend dieses Builds; eine Sitzung eines anderen Backends (z. B. Staging → Produktion) gilt als abgemeldet. */
+    private val apiUrl: String? = null,
+) : SessionManager,
+    SupportDraftStorage {
+    private val prefs =
+        EncryptedSharedPreferences.create(
+            context.applicationContext,
+            "advantly_auth",
+            MasterKey.Builder(context.applicationContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun loadDraft(ownerId: String?): String? = prefs.getString("support_${ownerId ?: "guest"}", null)
+
+    override fun loadReceipt(ownerId: String?): String? = prefs.getString("support_receipt_${ownerId ?: "guest"}", null)
+
+    override fun saveDraft(
+        ownerId: String?,
+        value: String?,
+    ) {
+        val key = "support_${ownerId ?: "guest"}"
+        check(prefs.edit().apply { if (value == null) remove(key) else putString(key, value) }.commit())
+    }
+
+    override fun saveReceipt(
+        ownerId: String?,
+        value: String,
+    ) {
+        check(prefs.edit().putString("support_receipt_${ownerId ?: "guest"}", value).commit())
+    }
+
+    val deviceSecret: String
+        get() =
+            prefs.getString("device_secret", null) ?: ByteArray(32)
+                .also { SecureRandom().nextBytes(it) }
+                .joinToString("") { "%02x".format(it) }
+                .also { check(prefs.edit().putString("device_secret", it).commit()) }
+
+    /** Eigene Capability für den späteren Cloud-Vertrag, niemals das Altersgate-Geheimnis wiederverwenden. */
+    val cloudInstallation: CloudInstallation
+        get() {
+            val id = prefs.getString("cloud_installation_id_v1", null)
+            val proof = prefs.getString("cloud_installation_proof_v1", null)
+            if (id != null && proof != null) return CloudInstallation(id, proof)
+            // Ein unvollständiger Datensatz wird nicht durch eine neue Identität umgangen.
+            check(id == null && proof == null)
+            val createdId = UUID.randomUUID().toString()
+            val createdProof = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+            check(
+                prefs
+                    .edit()
+                    .putString(
+                        "cloud_installation_id_v1",
+                        createdId,
+                    ).putString("cloud_installation_proof_v1", createdProof)
+                    .commit(),
+            )
+            return CloudInstallation(createdId, createdProof)
+        }
+
+    /**
+     * Recovery-Paket: Die Entscheidung über übernommene Daten beginnt eine neue Gerätequelle. Sitzung und Installations-
+     * kennung gehören zur alten Datenbank und werden verworfen; binden darf erst ein frischer, ausdrücklicher Login
+     * (Fünf-Minuten-Grenze des Servers). Das 24-h-Geheimnis und Supportentwürfe bleiben.
+     */
+    fun resetForRecovery() = resetCloudIdentity(prefs)
+
+    override suspend fun saveSession(session: UserSession) =
+        withContext(Dispatchers.IO) {
+            val edit = prefs.edit().putString("session", json.encodeToString(session))
+            if (apiUrl != null) edit.putString("session_backend", apiUrl)
+            check(edit.commit())
+        }
+
+    override suspend fun loadSession(): UserSession =
+        withContext(Dispatchers.IO) {
+            val value = prefs.getString("session", null) ?: throw NoSessionFoundException()
+            val session = json.decodeFromString<UserSession>(value)
+            if (apiUrl != null && foreignSession(prefs.getString("session_backend", null), session.accessToken, apiUrl)) {
+                check(prefs.edit().remove("session").commit())
+                throw NoSessionFoundException()
+            }
+            session
+        }
+
+    override suspend fun deleteSession() =
+        withContext(Dispatchers.IO) {
+            // Die 24-h-Sperre darf durch Abmelden nicht ihre Installationsbindung verlieren.
+            check(prefs.edit().remove("session").commit())
+        }
+}
+
+internal fun resetCloudIdentity(prefs: SharedPreferences) =
+    check(
+        prefs
+            .edit()
+            .remove("session")
+            .remove("cloud_installation_id_v1")
+            .remove("cloud_installation_proof_v1")
+            .commit(),
+    )
+
+/**
+ * Gehört die gespeicherte Sitzung zu einem anderen Backend? Maßgeblich ist das beim Speichern gemerkte Backend; Sitzungen
+ * aus Builds davor erkennt der Aussteller (`iss`) des Access-Tokens. Ohne lesbares `iss` gilt sie als eigene, damit ein
+ * fremdes Tokenformat niemanden dauerhaft abmeldet.
+ */
+internal fun foreignSession(
+    storedBackend: String?,
+    accessToken: String,
+    apiUrl: String,
+): Boolean {
+    if (storedBackend != null) return storedBackend != apiUrl
+    val issuer =
+        runCatching {
+            val payload = String(Base64.getUrlDecoder().decode(accessToken.split('.')[1]))
+            Json
+                .parseToJsonElement(payload)
+                .jsonObject["iss"]
+                ?.jsonPrimitive
+                ?.content
+        }.getOrNull() ?: return false
+    return !issuer.startsWith(apiUrl.trimEnd('/'))
+}

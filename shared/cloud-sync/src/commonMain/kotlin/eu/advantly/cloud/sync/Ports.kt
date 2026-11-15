@@ -1,0 +1,240 @@
+package eu.advantly.cloud.sync
+
+import eu.advantly.data.StoredEvent
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.json.JsonObject
+
+// Schnittstellen P2 (docs/p2-plan.md §6). CloudAuthPort ist für das Android-Handy implementiert (P2-C).
+// CloudBackend + LiveChannelPort folgen in P2-B/H mit supabase-kt (Handy und später Wear OS standalone),
+// CloudOutboxStore als Adapter HIER in cloud-sync über neue Primitive in shared/data (Spalte cloud_state, Cursor-Tabelle,
+// Migration 2.sqm) – data kennt cloud-sync nicht (kein Modulzyklus), CloudSyncPort als Worker.
+
+/** Server-RPCs (PostgREST `rpc/…`). Alle Aufrufe sind idempotent bzw. lesend; Fehler als [CloudException]. */
+interface CloudBackend {
+    /** `sync_push`: Geräte, Spieler, Match-Köpfe, Events (≤ 500), Projektionen in einer Transaktion. */
+    suspend fun push(batch: PushBatch): PushResponse
+
+    /** `sync_pull`: sichtbare Matches/Spieler/Freundschaften mit `serverVersion > cursor`. */
+    suspend fun pull(
+        cursor: Long,
+        limit: Int = 200,
+    ): PullResponse
+
+    /** `pull_match_events`: Events eines Matches nach Server-Cursor (RLS: nur Mitglieder, nie Visitor). */
+    suspend fun pullEvents(
+        matchId: String,
+        afterServerSeq: Long,
+        limit: Int = 500,
+    ): List<PulledEvent>
+
+    /** `match_event_watermarks`: Wasserstand je Gerät (Lückenprüfung wie die Geräte-Anti-Entropie). */
+    suspend fun watermarks(matchId: String): List<EventWatermark>
+
+    /** `get_visitor_match`: bereinigte Live-/Ergebnis-Sicht (Visitor, Mitglieder; nicht Feed). */
+    suspend fun visitorView(matchId: String): VisitorView
+}
+
+/** Fachlicher Fehler eines RPCs: [reason] = stabiler Grund-Schlüssel (`profile_not_active`, `age_below_minimum`, …). */
+class CloudException(
+    val reason: String,
+    val permission: Boolean,
+    cause: Throwable? = null,
+) : Exception(reason, cause)
+
+/** Angemeldete Sitzung (Profil-ID = `auth.uid()`). */
+data class CloudSession(
+    val profileId: String,
+    /** `false` bis `finish_onboarding` (Alias nach serverseitigem Altersgate) erfolgreich war. */
+    val onboarded: Boolean,
+    val deletionRequested: Boolean = false,
+    /** Prozesslokale Auth-Generation; neue Anmeldung ist auch beim selben Konto eine neue Sitzung. */
+    val generation: Long = 0,
+    val consentStatus: ConsentStatus = ConsentStatus.UNAVAILABLE,
+    /** K5: vom Betreiber gesperrt. Kontorechte (Export, Löschung, Support, Geräte) bleiben, Cloud-Arbeit nicht. */
+    val suspended: Boolean = false,
+)
+
+enum class IdTokenProvider { GOOGLE, APPLE }
+
+/** Handy-Auth. Geburtsdatum und Ticket leben nur für den laufenden Anmeldeversuch im Speicher. */
+data class CloudAdoptionSource(
+    val key: String,
+    val kind: String,
+    val eventCount: Long,
+)
+
+/** Eigenes Gerät aus `cloud_list_devices_v1`; der Server liefert keine Push-Token. */
+@kotlinx.serialization.Serializable
+data class CloudDevice(
+    val deviceId: String,
+    val kind: String? = null,
+    val platform: String? = null,
+    val model: String? = null,
+    val lastSeenAt: String? = null,
+    val revokedAt: String? = null,
+    val installationId: String? = null,
+    /** Diese Installation (Abgleich der Installations-ID); nur lokal bestimmt, nie vom Server übernommen. */
+    @kotlinx.serialization.Transient val current: Boolean = false,
+)
+
+interface CloudAuthPort {
+    /** Verifizierte Kontositzung unabhängig von lokaler Cloud-Sperre; Generation ändert sich nur bei Auth-Wechseln. */
+    val accountSession: StateFlow<CloudSession?> get() = session
+
+    /** Liest im Adapter zusätzlich synchron die SDK-Identität, damit ein verzögerter Flow nicht genügt. */
+    fun requireAccountSession(expected: CloudSession) {
+        val current = accountSession.value
+        if (current?.profileId != expected.profileId || current.generation != expected.generation) {
+            throw CloudException("cloud_session_changed", true)
+        }
+    }
+
+    /** Ohne Implementierung bleibt die Freigabe aus; alte Hosts bestätigen niemals implizit. */
+    suspend fun consent(language: String): ConsentSnapshot = throw CloudException("consent_unavailable", false)
+
+    /** Antwort und erneute Profilprüfung gehören zur selben Auth-Sitzung; Ablehnen sperrt lokale Cloud-Arbeit sofort. */
+    suspend fun decideConsent(
+        snapshot: ConsentSnapshot,
+        accept: Boolean,
+    ): ConsentSnapshot = throw CloudException("consent_unavailable", false)
+
+    /** Unabhängige Kontorechte, auch ohne aktuelle Zustimmung und bei Löschkarenz. */
+    suspend fun exportData(): String = throw CloudException("connection_failed", false)
+
+    suspend fun requestDeletion(): Unit = throw CloudException("connection_failed", false)
+
+    suspend fun cancelDeletion(): Unit = throw CloudException("connection_failed", false)
+
+    /** K4: eigene Geräte; nur Auth-Sitzung, daher auch nach Selbstwiderruf, bei Sperre und ohne Zustimmung. */
+    suspend fun devices(): List<CloudDevice> = throw CloudException("connection_failed", false)
+
+    /** K4: widerruft Gerät, Installation, Sitzungsbindungen und Push-Token; fremde Geräte lehnt der Server ab. */
+    suspend fun revokeDevice(deviceId: String): Unit = throw CloudException("connection_failed", false)
+
+    /**
+     * K4-U: hebt den Widerruf eines anderen eigenen Geräts auf. Braucht den Installationsnachweis dieses Handys; das
+     * widerrufene Gerät selbst lehnt der Server ab. Es behält seine IDs und bindet nach einer neuen Anmeldung wieder.
+     */
+    suspend fun restoreDevice(deviceId: String): Unit = throw CloudException("connection_failed", false)
+
+    fun adoptionSources(): List<CloudAdoptionSource> = emptyList()
+
+    fun adoptSources(ids: Set<String>) {}
+
+    val session: StateFlow<CloudSession?>
+
+    suspend fun issueAgeTicket(
+        country: String,
+        birthDate: String,
+    ): String
+
+    suspend fun cancelAgeTicket(ticket: String)
+
+    /** [ticket] `null`: nur bestehendes Konto anmelden; ein neues lehnt der Server ab (`age_ticket_required`). */
+    suspend fun signInWithIdToken(
+        provider: IdTokenProvider,
+        idToken: String,
+        rawNonce: String?,
+        ticket: String?,
+    )
+
+    suspend fun linkGoogle(
+        idToken: String,
+        rawNonce: String?,
+    )
+
+    /** [ticket] `null`: Code nur für ein bestehendes Konto; unbekannte Adressen enden mit `account_not_found`. */
+    suspend fun sendEmailCode(
+        email: String,
+        ticket: String?,
+    )
+
+    suspend fun verifyEmailCode(
+        email: String,
+        code: String,
+    )
+
+    suspend fun completeOnboarding(
+        alias: String,
+        username: String?,
+    )
+
+    suspend fun refreshProfile()
+
+    /** Lokale Sitzung wird auch offline gelöscht; serverseitiger Widerruf benötigt Netz. */
+    suspend fun signOut()
+
+    /** Ressourcen freigeben und lokale Cloud-Arbeit sofort sperren. */
+    fun close() {}
+}
+
+/**
+ * Lokale Outbox und Cursor. Implementierung als Adapter in `cloud-sync` über Primitive von `shared/data`
+ * (`cloud_state` je Event, Cursor-Tabelle) – Abhängigkeit nur cloud-sync → data. Grundlage ist das vorhandene
+ * Event-Log: Events mit `cloud_state = PENDING` sind ausstehend; Köpfe/Spieler/Geräte stammen aus den lokalen Tabellen.
+ */
+interface CloudOutboxStore {
+    fun pendingEvents(limit: Int): List<StoredEvent>
+
+    fun pendingCount(): Long
+
+    /** Match-Köpfe (inkl. Teilnehmer/Projektion), die seit dem letzten Upload geändert wurden. */
+    fun pendingHeaders(): Map<String, MatchDto>
+
+    fun pendingPlayers(): List<PlayerDto>
+
+    fun knownDevices(): List<DeviceDto>
+
+    fun apply(update: OutboxUpdate)
+
+    /** Matches, deren Projektion der Server noch nicht übernommen hat (`ahead_of_events`) – nächster Lauf. */
+    fun markProjectionPending(matchIds: Set<String>)
+
+    /** Gespeicherte `visibilityEpoch`; Abweichung → Vollabgleich. */
+    fun visibilityEpoch(): Long
+
+    fun saveVisibilityEpoch(epoch: Long)
+
+    fun pullCursor(): Long
+
+    fun savePullCursor(cursor: Long)
+
+    fun lastServerSeq(matchId: String): Long
+
+    fun saveServerSeq(
+        matchId: String,
+        serverSeq: Long,
+    )
+}
+
+/**
+ * Realtime (private, versionierte Kanäle, 03 E12): `match:<id>:<epoch>` liefert Engine-Events an Mitglieder,
+ * `match-live:<id>:<epoch>` die bereinigte Live-Sicht (auch Visitor), `tournament:<id>:<epoch>` die Platz-Updates.
+ * Auf das Ereignis `rotate` (Rechteänderung) den aktuellen Kanal per RPC holen und neu beitreten; verpasste Daten
+ * holt der Pull. Nur öffnen, solange ein Live-Screen sichtbar ist (Verbindungslimit).
+ */
+interface LiveChannelPort {
+    fun matchEvents(matchId: String): Flow<PulledEvent>
+
+    fun liveView(matchId: String): Flow<VisitorView>
+
+    fun tournament(tournamentId: String): Flow<JsonObject>
+}
+
+/** Zustand für UI und Diagnose („in der Cloud gesichert“, „N ausstehend“, abgewiesene Events). */
+data class CloudSyncState(
+    val signedIn: Boolean = false,
+    val pendingEvents: Long = 0,
+    val rejectedEvents: Int = 0,
+    val lastSuccessAtMs: Long? = null,
+    val lastError: String? = null,
+    val running: Boolean = false,
+)
+
+/** Sync-Worker: Push der Outbox, dann Delta-Pull; Auslöser App-Start, Netz da, Event (debounced), Push-Nachricht. */
+interface CloudSyncPort {
+    val state: StateFlow<CloudSyncState>
+
+    suspend fun syncNow()
+}

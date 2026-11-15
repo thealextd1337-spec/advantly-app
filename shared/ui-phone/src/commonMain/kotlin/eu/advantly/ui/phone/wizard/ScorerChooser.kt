@@ -1,0 +1,229 @@
+package eu.advantly.ui.phone.wizard
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
+import eu.advantly.core.model.TelemetryVisibility
+import eu.advantly.presentation.match.LiveMatchSnapshot
+import eu.advantly.presentation.match.ScorerOption
+import eu.advantly.presentation.match.WatchStatus
+import eu.advantly.ui.phone.app.LocalHealthConsent
+import eu.advantly.ui.phone.app.LocalTelemetryVisibility
+import eu.advantly.ui.phone.common.ToggleRow
+import eu.advantly.ui.phone.designsystem.AdvantlyTheme
+import eu.advantly.ui.phone.designsystem.Radii
+import eu.advantly.ui.phone.designsystem.Spacing
+import eu.advantly.ui.phone.live.matchLabel
+import eu.advantly.ui.phone.resources.Res
+import eu.advantly.ui.phone.resources.health_pulse_off
+import eu.advantly.ui.phone.resources.health_pulse_private
+import eu.advantly.ui.phone.resources.health_pulse_title
+import eu.advantly.ui.phone.resources.health_pulse_unavailable
+import eu.advantly.ui.phone.resources.wizard_scorer_no_watch
+import eu.advantly.ui.phone.resources.wizard_scorer_not_installed
+import eu.advantly.ui.phone.resources.wizard_scorer_phone
+import eu.advantly.ui.phone.resources.wizard_scorer_phone_sub
+import eu.advantly.ui.phone.resources.wizard_scorer_recheck
+import eu.advantly.ui.phone.resources.wizard_scorer_watch
+import eu.advantly.ui.phone.resources.wizard_scorer_watch_busy
+import eu.advantly.ui.phone.resources.wizard_scorer_watch_none
+import eu.advantly.ui.phone.resources.wizard_scorer_watch_sub
+import eu.advantly.ui.phone.resources.wizard_watch_workout
+import eu.advantly.ui.phone.resources.wizard_watch_workout_hint
+import org.jetbrains.compose.resources.StringResource
+import org.jetbrains.compose.resources.stringResource
+
+/**
+ * „Wer zählt?“ (04 §3.1, P1): „Meine Uhr“ (Standard, wenn eine Uhr verbunden ist; sonst gesperrt mit Hinweis) oder
+ * „Dieses Handy (Director)“, darunter „Workout auf meiner Uhr mitlaufen lassen“. Genutzt im Assistenten und in der
+ * Bestätigung beim Schnellstart. Ist die Uhr nicht wählbar, steht dort warum (keine Uhr gekoppelt, App nicht
+ * installiert) und „Erneut prüfen“ ([onRecheck]). Zählt die Uhr schon ein anderes laufendes Match ([busyMatch], F22),
+ * erklärt die Karte, dass die Uhr bei dieser Wahl zum neuen Match wechselt und das Handy das andere weiterzählt.
+ */
+@Composable
+internal fun ScorerChooser(
+    selected: ScorerOption,
+    watchStatus: WatchStatus,
+    watchWorkout: Boolean,
+    onSelect: (ScorerOption) -> Unit,
+    onWatchWorkout: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    onRecheck: (() -> Unit)? = null,
+    busyMatch: LiveMatchSnapshot? = null,
+    pulseVisibility: TelemetryVisibility? = null,
+    onPulseVisibility: (TelemetryVisibility) -> Unit = {},
+) {
+    val watchAvailable = watchStatus == WatchStatus.AVAILABLE
+    Column(modifier.fillMaxWidth()) {
+        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            ScorerOptionCard(
+                option = ScorerOption.MY_WATCH,
+                title = Res.string.wizard_scorer_watch,
+                subtitle =
+                    if (watchAvailable && busyMatch != null) {
+                        stringResource(Res.string.wizard_scorer_watch_busy, matchLabel(busyMatch))
+                    } else {
+                        stringResource(
+                            when (watchStatus) {
+                                WatchStatus.AVAILABLE -> Res.string.wizard_scorer_watch_sub
+                                WatchStatus.NO_WATCH -> Res.string.wizard_scorer_no_watch
+                                WatchStatus.APP_NOT_INSTALLED -> Res.string.wizard_scorer_not_installed
+                                WatchStatus.UNKNOWN -> Res.string.wizard_scorer_watch_none
+                            },
+                        )
+                    },
+                selected = selected == ScorerOption.MY_WATCH,
+                enabled = watchAvailable,
+                onSelect = onSelect,
+                subtitleTag = if (watchAvailable && busyMatch != null) "scorer_watch_busy" else null,
+            )
+            ScorerOptionCard(
+                option = ScorerOption.THIS_PHONE,
+                title = Res.string.wizard_scorer_phone,
+                subtitle = stringResource(Res.string.wizard_scorer_phone_sub),
+                selected = selected == ScorerOption.THIS_PHONE,
+                enabled = true,
+                onSelect = onSelect,
+            )
+        }
+        if (!watchAvailable && onRecheck != null) {
+            Box(
+                Modifier
+                    .testTag("scorer_recheck")
+                    .heightIn(min = Spacing.minTouchTarget)
+                    .clickable(role = Role.Button, onClick = onRecheck)
+                    .padding(horizontal = Spacing.m),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    stringResource(Res.string.wizard_scorer_recheck),
+                    style = AdvantlyTheme.typography.label,
+                    color = AdvantlyTheme.colors.brand,
+                )
+            }
+        }
+        ToggleRow(
+            title = stringResource(Res.string.wizard_watch_workout),
+            subtitle = stringResource(Res.string.wizard_watch_workout_hint),
+            checked = watchWorkout,
+            onChange = onWatchWorkout,
+            tag = "toggle_watch_workout",
+            modifier = Modifier.padding(top = Spacing.m),
+        )
+        if (watchWorkout) PulseChoice(pulseVisibility, onPulseVisibility)
+    }
+}
+
+/**
+ * Pulsverlauf des Matches (Plan Puls E2): „Gar nicht“ / „Nur für mich“, vorbelegt aus der Telemetrie-
+ * Sichtbarkeit. Ohne Einwilligung bzw. bei Telemetrie „Gar nicht“ nur der Hinweis auf die Einstellung (kein Dialog).
+ */
+@Composable
+private fun PulseChoice(
+    chosen: TelemetryVisibility?,
+    onSelect: (TelemetryVisibility) -> Unit,
+) {
+    val telemetry = LocalTelemetryVisibility.current
+    val available = LocalHealthConsent.current && telemetry.allowsLive
+    Text(
+        stringResource(Res.string.health_pulse_title),
+        style = AdvantlyTheme.typography.label,
+        color = AdvantlyTheme.colors.text,
+        modifier = Modifier.padding(top = Spacing.m, bottom = Spacing.xs),
+    )
+    if (!available) {
+        Text(
+            stringResource(Res.string.health_pulse_unavailable),
+            style = AdvantlyTheme.typography.caption,
+            color = AdvantlyTheme.colors.text2,
+            modifier = Modifier.testTag("pulse_unavailable"),
+        )
+        return
+    }
+    val selected = (chosen ?: telemetry).asPulseLevel()
+    WizardChoices(
+        options = PULSE_LEVELS,
+        selected = selected,
+        label = { pulseLevelLabel(it) },
+        onSelect = onSelect,
+        tagPrefix = "pulse",
+    )
+}
+
+/** Stufen in Assistent und Match-Detail. Gesundheitsdaten bleiben auf den eigenen Geräten, daher kein „Für alle“. */
+internal val PULSE_LEVELS = listOf(TelemetryVisibility.OFF, TelemetryVisibility.PRIVATE)
+
+/** Ältere Matches können „Für alle“ tragen; lokal wirkt das wie „Nur für mich“. */
+internal fun TelemetryVisibility.asPulseLevel(): TelemetryVisibility =
+    if (this == TelemetryVisibility.OFF) this else TelemetryVisibility.PRIVATE
+
+@Composable
+internal fun pulseLevelLabel(level: TelemetryVisibility): String =
+    stringResource(
+        when (level) {
+            TelemetryVisibility.OFF -> Res.string.health_pulse_off
+            TelemetryVisibility.PRIVATE, TelemetryVisibility.SHARE -> Res.string.health_pulse_private
+        },
+    )
+
+/** Auswahlkarte mit Radio-Punkt (Rolle `RadioButton`, ≥ 64 dp). */
+@Composable
+private fun ScorerOptionCard(
+    option: ScorerOption,
+    title: StringResource,
+    subtitle: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onSelect: (ScorerOption) -> Unit,
+    subtitleTag: String? = null,
+) {
+    val colors = AdvantlyTheme.colors
+    Row(
+        Modifier
+            .testTag("scorer_${option.name}")
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .background(colors.surface, Radii.cardShape)
+            .border(1.5.dp, if (selected) colors.brand else colors.line, Radii.cardShape)
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton) { onSelect(option) }
+            .padding(Spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.m),
+    ) {
+        Box(
+            Modifier
+                .size(22.dp)
+                .border(2.dp, if (selected) colors.brand else colors.text3, CircleShape)
+                .padding(5.dp)
+                .background(if (selected) colors.brand else Color.Transparent, CircleShape),
+        )
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(title), style = AdvantlyTheme.typography.label, color = if (enabled) colors.text else colors.text3)
+            Text(
+                subtitle,
+                style = AdvantlyTheme.typography.caption,
+                color = colors.text2,
+                modifier = if (subtitleTag != null) Modifier.testTag(subtitleTag) else Modifier,
+            )
+        }
+    }
+}

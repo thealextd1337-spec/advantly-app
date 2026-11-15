@@ -1,0 +1,215 @@
+-- Eigene Metadaten-Acks sind unabhängig von Geräte- und Event-Cloud-Acks.
+CREATE TABLE cloud_metadata (
+    kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+    uploaded_revision INTEGER NOT NULL DEFAULT 0 CHECK (uploaded_revision >= 0 AND uploaded_revision <= revision),
+    origin TEXT NOT NULL DEFAULT 'UNKNOWN',
+    source_device_id TEXT,
+    writer_profile_id TEXT,
+    PRIMARY KEY (kind, entity_id)
+);
+
+CREATE INDEX cloud_metadata_pending ON cloud_metadata(kind, uploaded_revision, revision);
+
+CREATE TRIGGER cloud_header_insert AFTER INSERT ON match_header BEGIN
+    INSERT INTO cloud_metadata(kind, entity_id) VALUES ('HEADER', new.id);
+    INSERT INTO cloud_metadata(kind, entity_id) VALUES ('PARTICIPANTS', new.id);
+    INSERT INTO cloud_metadata(kind, entity_id) VALUES ('PROJECTION', new.id);
+END;
+
+CREATE TRIGGER cloud_header_update AFTER UPDATE OF format_json, meta_json, previous_match_id ON match_header
+WHEN old.format_json IS NOT new.format_json OR old.meta_json IS NOT new.meta_json OR old.previous_match_id IS NOT new.previous_match_id BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'HEADER' AND entity_id = new.id;
+END;
+
+CREATE TRIGGER cloud_lineup_update AFTER UPDATE OF lineup_json ON match_header
+WHEN old.lineup_json IS NOT new.lineup_json BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id = new.id;
+END;
+
+CREATE TRIGGER cloud_projection_update AFTER UPDATE OF status, score_json ON match_header
+WHEN old.status IS NOT new.status OR old.score_json IS NOT new.score_json BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PROJECTION' AND entity_id = new.id;
+END;
+
+CREATE TRIGGER cloud_header_delete AFTER DELETE ON match_header BEGIN
+    DELETE FROM cloud_metadata WHERE entity_id = old.id AND kind IN ('HEADER', 'PARTICIPANTS', 'PROJECTION');
+END;
+
+CREATE TRIGGER cloud_assignment_insert AFTER INSERT ON match_assignment
+WHEN NOT EXISTS (SELECT 1 FROM setting WHERE key = 'replica.redacting' AND value = 'true') BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id = new.match_id;
+END;
+
+CREATE TRIGGER cloud_assignment_delete AFTER DELETE ON match_assignment
+WHEN NOT EXISTS (SELECT 1 FROM setting WHERE key = 'replica.redacting' AND value = 'true') BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id = old.match_id;
+END;
+
+CREATE TRIGGER cloud_player_insert AFTER INSERT ON player BEGIN
+    INSERT INTO cloud_metadata(kind, entity_id) VALUES ('PLAYER', new.id);
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id IN (
+        SELECT id FROM match_header WHERE instr(lineup_json, '"' || new.id || '"') > 0
+        UNION SELECT match_id FROM match_assignment WHERE player_id = new.id OR instr(player_json, '"' || new.id || '"') > 0
+    );
+END;
+
+CREATE TRIGGER cloud_player_update AFTER UPDATE OF display_name, kind ON player
+WHEN (old.display_name IS NOT new.display_name OR (old.kind = 'ARCHIVED') != (new.kind = 'ARCHIVED')
+    OR (old.kind = 'PLACEHOLDER') != (new.kind = 'PLACEHOLDER'))
+AND NOT EXISTS (SELECT 1 FROM setting WHERE key = 'replica.redacting' AND value = 'true') BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PLAYER' AND entity_id = new.id;
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id IN (
+        SELECT id FROM match_header WHERE instr(lineup_json, '"' || new.id || '"') > 0
+        UNION SELECT match_id FROM match_assignment WHERE player_id = new.id OR instr(player_json, '"' || new.id || '"') > 0
+    );
+END;
+
+CREATE TRIGGER cloud_assignment_update AFTER UPDATE OF player_json, player_id ON match_assignment
+WHEN (old.player_json IS NOT new.player_json OR old.player_id IS NOT new.player_id)
+AND NOT EXISTS (SELECT 1 FROM setting WHERE key = 'replica.redacting' AND value = 'true') BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id = new.match_id;
+END;
+
+-- Auch eine erst später belegte Spielerreferenz ist eine neue Teilnehmerauswahl.
+CREATE TRIGGER cloud_player_authority_update AFTER UPDATE OF origin, source_device_id, writer_profile_id ON cloud_metadata
+WHEN new.kind = 'PLAYER' AND (old.origin IS NOT new.origin OR old.source_device_id IS NOT new.source_device_id
+    OR old.writer_profile_id IS NOT new.writer_profile_id) BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id IN (
+        SELECT id FROM match_header WHERE instr(lineup_json, '"' || new.entity_id || '"') > 0
+        UNION SELECT match_id FROM match_assignment WHERE player_id = new.entity_id OR instr(player_json, '"' || new.entity_id || '"') > 0
+    );
+END;
+
+CREATE TRIGGER cloud_player_source_binding AFTER INSERT ON cloud_device_owner BEGIN
+    UPDATE cloud_metadata SET revision = revision + 1 WHERE kind = 'PARTICIPANTS' AND entity_id IN (
+        SELECT h.id FROM match_header h JOIN cloud_metadata p
+            ON p.kind = 'PLAYER' AND p.source_device_id = new.device_id AND instr(h.lineup_json, '"' || p.entity_id || '"') > 0
+        UNION SELECT a.match_id FROM match_assignment a JOIN cloud_metadata p
+            ON p.kind = 'PLAYER' AND p.source_device_id = new.device_id AND (a.player_id = p.entity_id OR instr(a.player_json, '"' || p.entity_id || '"') > 0)
+    );
+END;
+
+byKey:
+SELECT * FROM cloud_metadata WHERE kind = ? AND entity_id = ?;
+
+unknownMatches:
+SELECT entity_id FROM cloud_metadata WHERE kind = 'HEADER' AND origin = 'UNKNOWN';
+
+-- Nur Kandidaten mit belegter kontoeigener Quelle; die tatsächliche Genesis prüft weiterhin Kotlin.
+-- Vollständig quittierte Historie ist keine erneute Auflösungsarbeit.
+unknownMatchesForProfilePage:
+SELECT m.entity_id FROM cloud_metadata m
+WHERE m.kind = 'HEADER' AND m.origin = 'UNKNOWN' AND (:afterId IS NULL OR m.entity_id > :afterId)
+AND EXISTS (SELECT 1 FROM cloud_metadata pending WHERE pending.entity_id = m.entity_id
+    AND pending.kind IN ('HEADER', 'PARTICIPANTS', 'PROJECTION') AND pending.revision > pending.uploaded_revision)
+AND EXISTS (
+    SELECT 1 FROM match_event e JOIN local_source s ON s.device_id = e.device_id
+    JOIN cloud_device_owner o ON o.device_id = s.device_id
+    WHERE e.match_id = m.entity_id AND (e.type = 'MatchCreated' OR e.type = '') AND o.profile_id = :profile
+)
+ORDER BY m.entity_id LIMIT 500;
+
+unknownPlayers:
+SELECT entity_id FROM cloud_metadata WHERE kind = 'PLAYER' AND origin = 'UNKNOWN';
+
+recordSource:
+UPDATE cloud_metadata SET origin = :origin, source_device_id = :source
+WHERE entity_id = :id AND origin = 'UNKNOWN' AND kind IN :kinds;
+
+recordDownload:
+UPDATE cloud_metadata SET origin = 'CLOUD', source_device_id = NULL, writer_profile_id = :writer,
+    uploaded_revision = revision WHERE kind = :kind AND entity_id = :id;
+
+pendingForProfile:
+SELECT m.* FROM cloud_metadata m
+LEFT JOIN cloud_device_owner o ON o.device_id = m.source_device_id
+WHERE m.revision > m.uploaded_revision AND (m.writer_profile_id = :profile OR o.profile_id = :profile)
+AND NOT EXISTS (SELECT 1 FROM match_tombstone t WHERE t.match_id = m.entity_id AND m.kind != 'PLAYER')
+-- Nur tatsächlich abbildbare Einheiten zählen zum Limit; ihr Ack-Stand bleibt bei Ausschluss unverändert.
+AND ((m.kind = 'PLAYER' AND EXISTS (SELECT 1 FROM player p WHERE p.id = m.entity_id AND p.kind NOT IN ('PLACEHOLDER', 'FRIEND')))
+    OR (m.kind IN ('HEADER', 'PARTICIPANTS', 'PROJECTION') AND EXISTS (SELECT 1 FROM match_header h WHERE h.id = m.entity_id)))
+-- Wie beim Upload-Mapping darf eine Projektion keinen außerhalb dieser Auswahl ausstehenden Events vorauslaufen
+-- (endgültig abgelehnte zählen nicht als ausstehend, siehe CloudUpload.outstandingForMatch).
+AND (m.kind != 'PROJECTION' OR NOT EXISTS (
+    SELECT 1 FROM match_event e WHERE e.match_id = m.entity_id
+      AND (e.cloud_state = 0 OR (e.cloud_state = 2 AND e.cloud_rejection = 'device_not_owned'))
+      AND e.id NOT IN :selectedEventIds
+))
+-- Global redigierte Identitäten werden nie hochgeladen und belegen daher keinen Platz im Limit.
+AND (m.kind != 'PLAYER' OR NOT EXISTS (SELECT 1 FROM replica_redacted_player r WHERE r.player_id = m.entity_id))
+-- Keyset: Kotlin filtert blockierte Matches seitenweise vor dem effektiven Limit.
+AND (:afterRank IS NULL OR CASE m.kind WHEN 'PLAYER' THEN 0 WHEN 'HEADER' THEN 1 WHEN 'PARTICIPANTS' THEN 2 ELSE 3 END > :afterRank
+    OR (CASE m.kind WHEN 'PLAYER' THEN 0 WHEN 'HEADER' THEN 1 WHEN 'PARTICIPANTS' THEN 2 ELSE 3 END = :afterRank AND m.entity_id > :afterId))
+ORDER BY CASE m.kind WHEN 'PLAYER' THEN 0 WHEN 'HEADER' THEN 1 WHEN 'PARTICIPANTS' THEN 2 ELSE 3 END, m.entity_id
+LIMIT :limit;
+
+-- Der Restbestand enthält auch durch offene/abgewiesene Events blockierte Projektionen.
+-- Ausschließlich zählen: keine Entitäten/JSON-Spalten oder unbeschränkten ID-Listen an den Host liefern.
+pendingCountForProfile:
+SELECT count(*) FROM cloud_metadata m
+WHERE m.revision > m.uploaded_revision AND (m.writer_profile_id = :profile OR EXISTS (
+    SELECT 1 FROM cloud_device_owner o WHERE o.device_id = m.source_device_id AND o.profile_id = :profile
+))
+AND NOT EXISTS (SELECT 1 FROM match_tombstone t WHERE t.match_id = m.entity_id AND m.kind != 'PLAYER')
+AND CASE
+    WHEN m.kind = 'PLAYER' THEN EXISTS (SELECT 1 FROM player p WHERE p.id = m.entity_id AND p.kind NOT IN ('PLACEHOLDER', 'FRIEND'))
+        AND NOT EXISTS (SELECT 1 FROM replica_redacted_player r WHERE r.player_id = m.entity_id)
+    WHEN m.kind IN ('HEADER', 'PARTICIPANTS', 'PROJECTION') THEN EXISTS (SELECT 1 FROM match_header h WHERE h.id = m.entity_id)
+    ELSE 0 END;
+
+acknowledge:
+UPDATE cloud_metadata SET uploaded_revision = max(uploaded_revision, :selectedRevision)
+WHERE kind = :kind AND entity_id = :id AND revision >= :selectedRevision;
+
+currentSource:
+SELECT i.device_id FROM local_identity i JOIN setting s ON s.key = 'identity.scope' AND s.value = i.scope_id;
+
+sourceForSelf:
+SELECT device_id FROM local_source WHERE self_id = ? ORDER BY local DESC, device_id LIMIT 1;
+
+-- Dieselbe Quellenwahl wie sourceForSelf; vorhandene Herkunft und Acks bleiben unverändert.
+resolvePlayerSources:
+UPDATE cloud_metadata SET
+    source_device_id = (SELECT s.device_id FROM local_source s WHERE s.self_id = cloud_metadata.entity_id
+        ORDER BY s.local DESC, s.device_id LIMIT 1),
+    origin = CASE (SELECT s.local FROM local_source s WHERE s.self_id = cloud_metadata.entity_id
+        ORDER BY s.local DESC, s.device_id LIMIT 1) WHEN 1 THEN 'LOCAL' ELSE 'PEER' END
+WHERE kind = 'PLAYER' AND origin = 'UNKNOWN'
+AND (:playerId IS NULL OR entity_id = :playerId)
+AND EXISTS (SELECT 1 FROM local_source s WHERE s.self_id = cloud_metadata.entity_id);
+
+ownedSelfAlias:
+SELECT count(*) FROM local_source s JOIN cloud_device_owner o ON o.device_id = s.device_id
+WHERE s.self_id = :selfId AND o.profile_id = :profileId;
+
+playerReferenceAllowed:
+SELECT count(*) FROM cloud_metadata m
+LEFT JOIN local_source s ON s.device_id = m.source_device_id
+LEFT JOIN cloud_device_owner o ON o.device_id = s.device_id
+WHERE m.kind = 'PLAYER' AND m.entity_id = :id AND m.origin != 'UNKNOWN'
+AND (m.writer_profile_id = :profileId OR o.profile_id = :profileId)
+AND NOT EXISTS (SELECT 1 FROM replica_redacted_player r WHERE r.player_id = :id);
+
+genesisForMatch:
+SELECT id, match_id, device_id, device_seq, lamport, wall_clock_ms, parent_id, type, payload
+FROM match_event WHERE match_id = ? AND (type = 'MatchCreated' OR type = '') ORDER BY lamport, device_id, id;
+
+-- Nur zuvor saubere, eindeutig diesem Konto zugeordnete Materialisierungen ohne eigenen Teilnehmer-Upload.
+playerDownloadParticipantPage:
+SELECT m.entity_id, m.revision, m.writer_profile_id, s.materialized_version
+FROM cloud_metadata m JOIN cloud_pull_snapshot s
+ON s.kind = 'MATCH' AND s.entity_id = m.entity_id AND s.profile_id = :profileId
+WHERE m.kind = 'PARTICIPANTS' AND m.origin = 'CLOUD' AND m.source_device_id IS NULL
+AND m.writer_profile_id IS NULL
+AND m.revision = m.uploaded_revision AND s.materialized_version IS NOT NULL
+AND s.access = 'member' AND s.removal_pending = 0
+AND (:afterId IS NULL OR m.entity_id > :afterId)
+AND NOT EXISTS (SELECT 1 FROM cloud_pull_snapshot other WHERE other.kind = 'MATCH' AND other.entity_id = m.entity_id
+    AND other.profile_id != :profileId AND other.materialized_version IS NOT NULL)
+AND NOT EXISTS (SELECT 1 FROM match_tombstone t WHERE t.match_id = m.entity_id)
+AND (EXISTS (SELECT 1 FROM match_header h WHERE h.id = m.entity_id AND instr(h.lineup_json, '"' || :playerId || '"') > 0)
+    OR EXISTS (SELECT 1 FROM match_assignment a WHERE a.match_id = m.entity_id
+        AND (a.player_id = :playerId OR instr(a.player_json, '"' || :playerId || '"') > 0)))
+ORDER BY m.entity_id LIMIT 200;

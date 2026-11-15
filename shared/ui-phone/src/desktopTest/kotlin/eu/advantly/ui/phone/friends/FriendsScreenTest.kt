@@ -1,0 +1,300 @@
+package eu.advantly.ui.phone.friends
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toAwtImage
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.ComposeUiTest
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.runDesktopComposeUiTest
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
+import eu.advantly.cloud.sync.BlockedProfile
+import eu.advantly.cloud.sync.CloudException
+import eu.advantly.cloud.sync.CloudSession
+import eu.advantly.cloud.sync.ConsentStatus
+import eu.advantly.cloud.sync.FoundProfile
+import eu.advantly.cloud.sync.FriendRequestResult
+import eu.advantly.cloud.sync.FriendsPort
+import eu.advantly.cloud.sync.PulledFriendship
+import eu.advantly.presentation.auth.AuthViewModel
+import eu.advantly.presentation.friends.FriendsViewModel
+import eu.advantly.presentation.push.FriendsSection
+import eu.advantly.presentation.push.NotificationSettingsPort
+import eu.advantly.presentation.push.PushTarget
+import eu.advantly.ui.phone.AdvantlyApp
+import eu.advantly.ui.phone.app.AppTab
+import eu.advantly.ui.phone.auth.FakePhoneAuth
+import eu.advantly.ui.phone.designsystem.AdvantlyTheme
+import eu.advantly.ui.phone.testModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.File
+import java.util.Locale
+import javax.imageio.ImageIO
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+private class UiFriends : FriendsPort {
+    val calls = mutableListOf<String>()
+    var failure: String? = null
+    val blocked = mutableListOf<BlockedProfile>()
+
+    private fun call(name: String) {
+        calls += name
+        failure?.let { throw CloudException(it, true) }
+    }
+
+    override suspend fun friendCode() = "K7QF92MX".also { call("code") }
+
+    override suspend fun findProfile(query: String): FoundProfile? {
+        call("find:$query")
+        return FoundProfile("bob", "Bob Builder", "bob_99")
+    }
+
+    override suspend fun sendFriendRequest(
+        profileId: String,
+        viaCode: Boolean,
+    ): FriendRequestResult {
+        call("send:$profileId")
+        return FriendRequestResult.REQUESTED
+    }
+
+    override suspend fun respondFriendRequest(
+        requesterId: String,
+        accept: Boolean,
+    ) = call("respond:$requesterId:$accept")
+
+    override suspend fun removeFriend(profileId: String) = call("remove:$profileId")
+
+    override suspend fun blockUser(profileId: String) {
+        call("block:$profileId")
+        blocked += BlockedProfile(profileId, "2026-10-27T10:00:00Z", profileId.replaceFirstChar { it.uppercase() })
+    }
+
+    override suspend fun unblockUser(profileId: String) {
+        call("unblock:$profileId")
+        blocked.removeAll { it.profileId == profileId }
+    }
+
+    override suspend fun blockedProfiles() = blocked.toList().also { call("blocked") }
+}
+
+@OptIn(ExperimentalTestApi::class)
+class FriendsScreenTest {
+    private val local =
+        listOf(
+            PulledFriendship("anna", "Anna mit einem sehr langen Alias", "accepted", outgoing = true, serverVersion = 1),
+            PulledFriendship("carl", "Carl", "pending", outgoing = false, serverVersion = 2),
+            PulledFriendship("dora", "Dora", "pending", outgoing = true, serverVersion = 3),
+        )
+
+    private fun withLocale(
+        locale: Locale,
+        block: () -> Unit,
+    ) {
+        val previous = Locale.getDefault()
+        try {
+            Locale.setDefault(locale)
+            block()
+        } finally {
+            Locale.setDefault(previous)
+        }
+    }
+
+    private fun ComposeUiTest.click(tag: String) = onNodeWithTag(tag).performScrollTo().performClick()
+
+    private fun ComposeUiTest.screenshot(name: String) {
+        val directory = File(System.getenv("ADVANTLY_SCREENSHOT_DIR") ?: "build/reports/screenshots").apply { mkdirs() }
+        ImageIO.write(onRoot().captureToImage().toAwtImage(), "png", File(directory, "$name.png"))
+    }
+
+    @Test fun segmentsAddFlowRequestsAndConfirmationsWorkAtDoubleFontSize() =
+        withLocale(Locale.ENGLISH) {
+            runDesktopComposeUiTest(width = 360, height = 1600) {
+                val scope = CoroutineScope(Dispatchers.Unconfined + Job())
+                val auth = FakePhoneAuth().apply { session.value = CloudSession("alice", true, consentStatus = ConsentStatus.CURRENT) }
+                val port = UiFriends()
+                val model = FriendsViewModel(auth, port, { if (it == "alice") local else emptyList() }, null, scope)
+                val shared = mutableListOf<String>()
+                val records = mutableListOf<String>()
+                port.failure = "connection_failed"
+                setContent {
+                    CompositionLocalProvider(LocalDensity provides Density(1f, 2f)) {
+                        AdvantlyTheme(darkTheme = false) {
+                            FriendsScreen(model, onOpenAccount = {}, onShareText = { shared += it }, onOpenRecord = { records += it })
+                        }
+                    }
+                }
+                try {
+                    // Gescheitertes Laden bleibt nicht bei „wird geladen“ stehen.
+                    onNodeWithTag("friends_error").assertTextContains("No connection", substring = true)
+                    port.failure = null
+                    click("friends_code_retry")
+                    onNodeWithTag("friends_code").assertTextContains("K7QF-92MX")
+                    screenshot("friends-en-200")
+                    click("friends_share")
+                    assertEquals(listOf("Add me on Advantly – my friend code: K7QF-92MX"), shared)
+
+                    // Hinzufügen: exakte Suche, Treffer, Anfrage senden → sofort unter „Gesendet“.
+                    onNodeWithTag("friends_query").performScrollTo().performTextInput("bob_99")
+                    click("friends_search")
+                    onNodeWithTag("friends_found").assertTextContains("Bob Builder · @bob_99")
+                    click("friends_send")
+                    onNodeWithTag("friends_request_result").assertTextContains("Friend request sent.")
+
+                    // Bilanz mit/gegen den Freund über sein Konto.
+                    onNodeWithTag("friends_record_anna").performScrollTo().assertTextEquals("Record")
+                    click("friends_record_anna")
+                    assertEquals(listOf("anna"), records)
+
+                    // Entfernen braucht eine Rückfrage; Abbrechen ändert nichts.
+                    click("friends_remove_anna")
+                    onNodeWithText("Remove Anna mit einem sehr langen Alias from your friends? Shared visibility between you ends.")
+                        .assertIsDisplayed()
+                    onNodeWithTag("friends_confirm_cancel").performClick()
+                    assertTrue(port.calls.none { it.startsWith("remove") })
+                    click("friends_remove_anna")
+                    onNodeWithTag("friends_confirm").performClick()
+                    onNodeWithTag("friends_person_anna").assertDoesNotExist()
+
+                    // Blockieren und Aufheben jeweils mit Rückfrage.
+                    click("friends_blocked_show")
+                    click("friends_segment_requests")
+                    onNodeWithTag("friends_segment_requests").assertTextContains("Requests (1)")
+                    onNodeWithTag("friends_person_bob").assertExists()
+                    click("friends_block_carl")
+                    onNodeWithTag("friends_confirm").performClick()
+                    onNodeWithTag("friends_person_carl").assertDoesNotExist()
+                    click("friends_segment_friends")
+                    onNodeWithTag("friends_blocked_carl").assertTextContains("Carl · blocked since 2026-10-27")
+                    click("friends_unblock_carl")
+                    onNodeWithTag("friends_confirm").performClick()
+                    onNodeWithTag("friends_blocked_carl").assertDoesNotExist()
+
+                    click("friends_segment_requests")
+                    click("friends_withdraw_dora")
+                    onNodeWithTag("friends_confirm").performClick()
+                    onNodeWithTag("friends_person_dora").assertDoesNotExist()
+
+                    click("friends_segment_feed")
+                    onNodeWithTag("friends_feed").assertIsDisplayed()
+
+                    // Rate-Limit verständlich statt Rohfehler.
+                    click("friends_segment_friends")
+                    port.failure = "rate_limit_exceeded"
+                    click("friends_search")
+                    onNodeWithTag("friends_error").assertTextContains("Too many searches", substring = true)
+                    assertEquals(
+                        listOf(
+                            "code",
+                            "code",
+                            "find:bob_99",
+                            "send:bob",
+                            "remove:anna",
+                            "blocked",
+                            "block:carl",
+                            "blocked",
+                            "unblock:carl",
+                            "blocked",
+                            "remove:dora",
+                            "find:bob_99",
+                        ),
+                        port.calls,
+                    )
+                } finally {
+                    model.close()
+                    scope.cancel()
+                }
+            }
+        }
+
+    @Test fun withoutAccountTheTabExplainsAndLeadsToTheAccountInGermanAtDoubleFontSize() =
+        withLocale(Locale.GERMAN) {
+            runDesktopComposeUiTest(width = 360, height = 892) {
+                val scope = CoroutineScope(Dispatchers.Unconfined + Job())
+                val auth = FakePhoneAuth()
+                val port = UiFriends()
+                val friends = FriendsViewModel(auth, port, { local }, null, scope)
+                var opened = 0
+                // Mit Konto-Pflicht deckt die App diesen Zustand mit dem Konto-Fluss ab; der Tab bleibt trotzdem ehrlich.
+                setContent {
+                    CompositionLocalProvider(LocalDensity provides Density(1f, 2f)) {
+                        AdvantlyTheme(darkTheme = true) {
+                            Box(Modifier.size(360.dp, 892.dp)) { FriendsScreen(friends, onOpenAccount = { opened++ }, onShareText = null) }
+                        }
+                    }
+                }
+                try {
+                    onNodeWithTag("friends_hint")
+                        .assertTextContains("Melde dich an, um Freunde hinzuzufügen.")
+                    onNodeWithTag("friends_person_anna").assertDoesNotExist()
+                    screenshot("friends-signed-out-de-200")
+                    click("friends_open_account")
+                    assertEquals(1, opened)
+                    assertTrue(port.calls.isEmpty())
+
+                    // Ohne Zustimmung: eigener Hinweis, weiterhin keine Daten und keine Aufrufe.
+                    auth.session.value = CloudSession("alice", true, consentStatus = ConsentStatus.DECLINED)
+                    onNodeWithTag("friends_hint").assertTextContains("Zustimmung", substring = true)
+                    assertTrue(port.calls.isEmpty())
+                } finally {
+                    friends.close()
+                    scope.cancel()
+                }
+            }
+        }
+
+    @Test fun notificationHintIsDismissableAndPushLinkOpensItsSegment() =
+        withLocale(Locale.ENGLISH) {
+            runDesktopComposeUiTest(width = 360, height = 1600) {
+                val scope = CoroutineScope(Dispatchers.Unconfined + Job())
+                val auth = FakePhoneAuth().apply { session.value = CloudSession("alice", true, consentStatus = ConsentStatus.CURRENT) }
+                val model = FriendsViewModel(auth, UiFriends(), { if (it == "alice") local else emptyList() }, null, scope)
+                val settings =
+                    object : NotificationSettingsPort {
+                        override val enabled = MutableStateFlow(false)
+                        override val hint = MutableStateFlow(true)
+
+                        override fun setEnabled(enabled: Boolean) = Unit
+
+                        override fun dismissHint() {
+                            hint.value = false
+                        }
+                    }
+                var link by mutableStateOf<PushTarget?>(null)
+                setContent {
+                    AdvantlyTheme(darkTheme = false) {
+                        FriendsScreen(model, {}, null, notifications = settings, link = link, onLinkHandled = { link = null })
+                    }
+                }
+                onNodeWithText("Not now").assertIsDisplayed()
+                click("notifications_hint_later")
+                onNodeWithTag("notifications_hint").assertDoesNotExist()
+                onNodeWithTag("friends_accept_carl").assertDoesNotExist()
+                link = PushTarget(FriendsSection.REQUESTS)
+                onNodeWithTag("friends_accept_carl").assertIsDisplayed()
+                assertEquals(null, link)
+                scope.cancel()
+            }
+        }
+}

@@ -1,0 +1,252 @@
+package eu.advantly.match.session
+
+import eu.advantly.core.model.DeviceId
+import eu.advantly.core.model.EventId
+import eu.advantly.core.model.HealthConsent
+import eu.advantly.core.model.Lineup
+import eu.advantly.core.model.MatchFormat
+import eu.advantly.core.model.MatchId
+import eu.advantly.core.model.MatchMeta
+import eu.advantly.core.model.PlayerId
+import eu.advantly.core.model.Side
+import eu.advantly.core.model.TelemetryPreference
+import eu.advantly.core.model.TelemetryVisibility
+import eu.advantly.core.scoring.MatchState
+import eu.advantly.core.scoring.NextSetKind
+import eu.advantly.core.scoring.ScoreEvent
+import eu.advantly.core.scoring.ServeOutcome
+import eu.advantly.core.scoring.ServerChoice
+import eu.advantly.core.scoring.SidePair
+import eu.advantly.core.scoring.TapConflict
+import eu.advantly.device.link.LinkState
+import eu.advantly.sync.protocol.CompatibilityStatus
+import eu.advantly.sync.protocol.PeerKind
+
+/**
+ * Gesamtzustand einer [MatchSession] – genau das, was eine UI zum Rendern braucht.
+ *
+ * @property match fokussiertes Match (Live-Ansicht; Uhr: ihr einziges offenes) oder `null` (Startbildschirm)
+ * @property dataRevision steigt, wenn sich gespeicherte Daten außerhalb des fokussierten Matches ändern (Löschung,
+ *   Match-Kopf/-Stand eines anderen Matches, Spieler, Favoriten, Identität) – Signal für Listen-UIs (Verlauf), neu zu laden
+ * @property matches alle offenen Matches (fokussiertes eingeschlossen), nach Erstellzeit; Uhren: höchstens eines (F22)
+ * @property watchMatchId Handy: das Uhr-Match – das Match, das die eigene Uhr zählt bzw. anzeigt (01 §4.9), `null` = die
+ *   Uhr ist frei. Uhr: das ihr vom Handy zugewiesene Match (dem sie folgt), `null` = keine Zuweisung bekannt
+ * @property droppedInputs Uhr: zuletzt gemeldete verworfene eigene Eingaben in einem nicht mehr offenen Match (z. B. nach
+ *   der bestätigten Übernahme durch das Handy) – UI-Hinweis „N Eingaben nicht übernommen“
+ * @property telemetry Telemetrie-Sichtbarkeit des Besitzers (P2-J, F19/F29) mit Änderungszeit; auf Handy und Uhr gleich,
+ *   sobald sie sich gesehen haben ([MatchSession.setTelemetryVisibility])
+ * @property lifecycleRevision steigt bei jeder Access-, Redaktions- oder Directory-Änderung aus Data (auch aus Pull oder
+ *   Zustellung im Hintergrund). Konsumenten verwerfen dann **alle** abgeleiteten Match- und Spielernamen. Zähler im
+ *   Speicher, beginnt nach Neustart bei 0: nur auf Ungleichheit vergleichen, nie auf Größe.
+ * @property pairingConflict Uhr: ein vertrautes Handy mit anderer Pairing-Autorität wurde abgelehnt (Handy ersetzt,
+ *   wiederhergestellt oder neu gekoppelt). Nur die ausdrückliche Neukopplung ([MatchSession.repairPairing]) löst das.
+ * @property healthConsent Einwilligung „Pulsverlauf aufzeichnen“ (Plan Puls H5), auf den eigenen Geräten abgeglichen
+ * @property healthConsentToConfirm Handy: „an“ kam von der Uhr, ohne eigene Entscheidung des Handys – einmal nachfragen
+ *   ([MatchSession.confirmHealthConsent], Plan 0.5.1 §5.4)
+ */
+data class SessionState(
+    val match: ActiveMatch?,
+    val sync: SyncStatus,
+    val dataRevision: Long = 0,
+    val matches: List<ActiveMatch> = listOfNotNull(match),
+    val watchMatchId: MatchId? = null,
+    val droppedInputs: DroppedInputs? = null,
+    val telemetry: TelemetryPreference = TelemetryPreference(),
+    val devices: List<DeviceStatus> = emptyList(),
+    val lifecycleRevision: Long = 0,
+    val pairingConflict: Boolean = false,
+    val healthConsent: HealthConsent = HealthConsent(),
+    val healthConsentToConfirm: Boolean = false,
+) {
+    /** Kurzform für Anzeige und Versandentscheidung. */
+    val telemetryVisibility: TelemetryVisibility get() = telemetry.visibility
+
+    /** Offenes Match [id] oder `null`. */
+    fun match(id: MatchId): ActiveMatch? = matches.firstOrNull { it.id == id }
+
+    /**
+     * Ist der Zähler von [match] erreichbar? Dieses Gerät zählt selbst oder der Zähler ist eine verbundene, kompatible
+     * Gegenstelle ([SyncStatus.scorerConnected] gilt nur für das fokussierte Match).
+     */
+    fun scorerConnected(match: ActiveMatch): Boolean =
+        match.isScorer ||
+            sync.peers.any { it.compatibility == CompatibilityStatus.COMPATIBLE && it.deviceId == match.scorerDeviceId }
+}
+
+/**
+ * Das offene Match.
+ *
+ * @property state kanonischer Engine-Zustand (02 §8): Stand, Aufschlag, Flags, `pending`, Effekte des letzten Events
+ * @property pointsPlayed wirksam gezählte Ballwechsel
+ * @property scorerDeviceId Gerät, das gerade zählt (02 §7.5); [isScorer] = dieses Gerät
+ * @property scorerKind Art des zählenden Geräts (soweit bekannt)
+ * @property rejectedByRoleCount Eingaben von Nicht-Zählern, die ignoriert wurden („N Eingaben nicht übernommen“)
+ * @property canUndo dieses Gerät zählt und es gibt ein Undo-Ziel (02 §7.3)
+ * @property canRedo das zuletzt auf diesem Gerät rückgängig gemachte Event lässt sich wiederherstellen
+ * @property conflicts aktive Widersprüche (nur noch innerhalb eines Geräts möglich, 01 §4.4)
+ * @property absorbedTaps als Doppel-Tap zusammengeführte Punkte
+ * @property lastPoint zuletzt wirksam gezählter Ballwechsel – Ziel der Aufschlag-Leiste ([MatchSession.setServeInfo])
+ * @property serveInfoEnabled Aufschlag-Info erfassbar: Tennis/Padel und Match-Option „Aufschläge“ ≠ „Nein“
+ * @property canRemovePoint je Seite: dieses Gerät zählt und es gibt einen wirksamen Punkt der Seite
+ *   ([MatchSession.removeLastPointOf])
+ * @property nextSetOptions bei `AWAITING_DECISION` die wählbaren Satzarten für [MatchSession.startNextSet], sonst leer
+ */
+data class ActiveMatch(
+    val id: MatchId,
+    val format: MatchFormat,
+    val lineup: Lineup,
+    val meta: MatchMeta,
+    val createdAtMs: Long,
+    val previousMatchId: MatchId?,
+    val state: MatchState,
+    val pointsPlayed: Int,
+    val scorerDeviceId: DeviceId?,
+    val scorerKind: PeerKind?,
+    val isScorer: Boolean,
+    val rejectedByRoleCount: Int,
+    val canUndo: Boolean,
+    val canRedo: Boolean,
+    val conflicts: List<TapConflict>,
+    val absorbedTaps: List<EventId>,
+    val eventCount: Int,
+    val lastPoint: LastPoint? = null,
+    val serveInfoEnabled: Boolean = false,
+    val canRemovePoint: SidePair<Boolean> = SidePair(false, false),
+    val nextSetOptions: List<NextSetKind> = emptyList(),
+    val canCorrectServerRetroactively: Boolean = true,
+) {
+    /**
+     * Offene Aufschlägerwahl im Doppel (02 §6.5.5) aus dem Engine-Zustand: `game` 1/2, Side, wählbare Spieler, bereits
+     * gewählter Spieler. `null` = kein Wahlfenster.
+     */
+    val serverChoice: ServerChoice? get() = state.serverChoice
+
+    /** Lokaler Kontext für sichere Auswahlkommandos; auch auf Anzeige-Geräten lesbar. */
+    val serverChoiceContext: ServerChoiceContext? get() = deriveServerChoiceContext(id, state)
+
+    /** Eine Aufschlägerwahl ist offen und noch nicht getroffen – die UI fragt (ohne das Zählen zu blockieren). */
+    val awaitingServerChoice: Boolean get() = state.serverChoice?.let { it.chosen == null } == true
+}
+
+/** Abgabe des Zählens ([MatchSession.handOverScoring]): `ScorerChanged` [eventId] von [from] (eigenes Gerät) an [to]. */
+data class ScorerHandover(
+    val eventId: EventId,
+    val from: DeviceId,
+    val to: DeviceId,
+)
+
+/** Verworfene eigene Eingaben ([count] insgesamt) im nicht offenen Match [matchId]. */
+data class DroppedInputs(
+    val matchId: MatchId,
+    val count: Int,
+)
+
+/** Der zuletzt gezählte Ballwechsel (für die Aufschlag-Leiste direkt nach dem Punkt).
+ *
+ * @property side Gewinner
+ * @property servingSide aufschlagende Side vor dem Punkt
+ * @property server Aufschläger (im Doppel nach Wahl bzw. Rotation)
+ * @property serve aktuell erfasste Aufschlag-Info oder `null`
+ * @property doubleFaultAllowed „Doppelfehler“ ist wählbar (die Rückschlagseite hat den Punkt gewonnen)
+ */
+data class LastPoint(
+    val id: EventId,
+    val side: Side,
+    val servingSide: Side,
+    val server: PlayerId,
+    val serve: ServeOutcome?,
+    val doubleFaultAllowed: Boolean,
+)
+
+/** Anzeige des Sync-Indikators (04 §3.2): verbunden · nur lokal (wird nachsynchronisiert) · Konflikt. */
+enum class SyncIndicator {
+    CONNECTED,
+    LOCAL_ONLY,
+    CONFLICT,
+}
+
+/**
+ * Sync-Status für die Sync-Pill.
+ *
+ * @property link Zustand des Geräte-Links (`UNAVAILABLE` auch ohne Link, z. B. Standalone)
+ * @property peers live erreichbare Gegenstellen
+ * @property scorerConnected dieses Gerät zählt selbst oder der Zähler ist eine verbundene, kompatible Gegenstelle
+ * @property pendingToPeers Ausgangs-Rückstand über **alle** Matches: Events, die noch keine Gegenstelle bestätigt hat
+ *   (0 = „synchron“, sonst „N ausstehend“). Bestätigung = Ack der `Events`-Nachricht, `Summary` der Gegenstelle oder
+ *   Empfang von dort; persistent im Event-Store (übersteht App-Neustarts).
+ * @property lastEventReceivedAtMs Wanduhrzeit, zu der zuletzt ein neues Event empfangen wurde (Anzeige: „Stand vor X s“)
+ * @property lastSyncAtMs Wanduhrzeit des letzten empfangenen Abgleichs (Summary/Events), sonst `null`
+ * @property lifecyclePendingToPeers Handy: unbestätigte Access- und Redaktionszustellungen an gekoppelte Uhren (Summe)
+ * @property lifecycleBlocked eigener Lifecycle-Rückstand, der derzeit nicht zugestellt werden darf (Stamp oder Kontext
+ *   ungültig, Update nötig)
+ */
+data class SyncStatus(
+    val link: LinkState,
+    val peers: List<PeerInfo>,
+    val indicator: SyncIndicator,
+    val scorerConnected: Boolean,
+    val pendingToPeers: Int,
+    val lastEventReceivedAtMs: Long?,
+    val lastSyncAtMs: Long?,
+    val lifecyclePendingToPeers: Int = 0,
+    val lifecycleBlocked: Boolean = false,
+) {
+    /** Nichts mehr ausstehend: weder Events noch Lifecycle-Zustellungen, und nichts blockiert. */
+    val settled: Boolean
+        get() = pendingToPeers == 0 && lifecyclePendingToPeers == 0 && !lifecycleBlocked
+
+    /**
+     * Versionsunterschied zu einer erreichbaren Gegenstelle (Hello/`negotiate`, Protokoll 2 seit W2-A): `PEER_TOO_OLD` =
+     * die Gegenstelle (z. B. Uhr) muss aktualisiert werden, `PEER_TOO_NEW` = dieses Gerät. Solange er besteht, tauschen
+     * beide nichts aus. `null` = kein Unterschied bekannt.
+     */
+    val versionMismatch: CompatibilityStatus?
+        get() = peers.firstNotNullOfOrNull { it.compatibility?.takeIf { status -> status != CompatibilityStatus.COMPATIBLE } }
+}
+
+/**
+ * Gegenstelle des Geräte-Links.
+ *
+ * @property peer Link-Adresse (Wear: Node-ID, Apple: `watch`/`phone`)
+ * @property deviceId aus dem `Hello`, `null` bis es angekommen ist
+ * @property kind aus dem `Hello`, `null` bis es angekommen ist
+ * @property compatibility Ergebnis der Versionsprüfung, `null` bis zum `Hello`
+ */
+data class PeerInfo(
+    val peer: String,
+    val deviceId: DeviceId?,
+    val kind: PeerKind?,
+    val compatibility: CompatibilityStatus?,
+)
+
+/** Wer ein neues Match zählt (02 §7.5): dieses Gerät oder ein gekoppeltes (z. B. die Uhr). */
+sealed interface ScorerChoice {
+    data object ThisDevice : ScorerChoice
+
+    data class Device(
+        val deviceId: DeviceId,
+    ) : ScorerChoice
+
+    /**
+     * Die eigene Uhr – auch ohne Live-Verbindung (W1-I): verbundene Uhr, sonst die einzige bekannte Uhr (aus einem
+     * früheren `Hello`), sonst Platzhalter [MatchSession.PENDING_WATCH]. Beim Platzhalter übergibt die Session beim
+     * ersten `Hello` einer Uhr per `ScorerChanged` an sie; bis dahin zählt niemand (Anzeige „Warte auf Uhr …“, Ausweg
+     * `takeOverScoring()`).
+     */
+    data object MyWatch : ScorerChoice
+}
+
+/** Callback-Variante von [MatchSession.state] (für die Swift-Facade ohne Flows). Aufruf auf dem Scheduler-Thread. */
+fun interface SessionListener {
+    fun onStateChanged(state: SessionState)
+
+    /**
+     * Ein eigenes Event ist dauerhaft gespeichert (nach dem Commit) und angewandt; [state] ist der Stand danach. Kommt vor
+     * Kopf-Update, Versand und [onStateChanged] – für sofortige Rückmeldung am Platz (Haptik). Darf die Session nicht
+     * aufrufen.
+     */
+    fun onOwnEventCommitted(
+        event: ScoreEvent,
+        state: MatchState,
+    ) = Unit
+}

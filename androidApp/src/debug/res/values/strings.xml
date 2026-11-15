@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nur Debug: Zustand des Session-Links (W1-I). Default Englisch, Deutsch in values-de/. -->
+<resources>
+    <string name="link_none" translatable="false">–</string>
+    <string name="link_debug_launcher">Advantly Link Debug</string>
+    <string name="link_debug_title">Link debug (Wear Data Layer)</string>
+    <string name="link_state_connected">Connected</string>
+    <string name="link_state_disconnected">Disconnected</string>
+    <string name="link_state_unavailable">Unavailable (Wear OS app / Play Services missing?)</string>
+    <string name="link_peer">Peer: %1$s</string>
+    <string name="link_peer_none">none</string>
+    <string name="link_pending">Pending to peers: %1$s</string>
+    <string name="link_last_event">Last event received (ms): %1$s</string>
+    <string name="link_last_sync">Last sync (ms): %1$s</string>
+    <string name="link_scorer_connected">Scorer connected: %1$s</string>
+    <string name="link_frames">Frames sent / acked / retries: %1$s</string>
+    <string name="link_queue">Queued / failed: %1$s</string>
+    <string name="link_delivered">Delivered / duplicates: %1$s</string>
+</resources>

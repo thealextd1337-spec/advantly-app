@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default: Englisch. Deutsch in values-de/ – Android Lint (MissingTranslation) bricht ab, wenn eine Übersetzung fehlt. -->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <string name="recovery_notice_title">Existing data kept safe</string>
+    <string name="recovery_notice_body">Previous data is retained separately. Sync is paused. You can count new matches offline.</string>
+    <string name="recovery_decision_body">Previous data found. Restoring (recommended) gives this watch a new identity; your phone then shares what belongs to its account. Starting fresh keeps the data stored, you can still restore it later. Counting new matches first blocks restoring until you delete them.</string>
+    <string name="recovery_blocked_body">Matches were counted since. Delete them to restore.</string>
+    <string name="recovery_failed_body">Restoring failed. Nothing was changed.</string>
+    <string name="recovery_restore">Restore</string>
+    <string name="recovery_start_fresh">Start fresh</string>
+    <string name="recovery_continue_offline">Later</string>
+    <string name="recovery_fresh_confirm_title">Start fresh?</string>
+    <string name="recovery_fresh_confirm_body">Previous data stays stored but is not shown. Restore it later on the start screen as long as you count nothing new here.</string>
+    <string name="recovery_later_title">Restore previous data</string>
+    <string name="recovery_later_body">Gives this watch a new identity and restarts the app. Pair again with your phone afterwards.</string>
+    <string name="recovery_save_failed">That did not work. Nothing was changed.</string>
+    <string name="pairing_conflict_title">Phone changed</string>
+    <string name="pairing_conflict_body">A phone with a new pairing was found. Pair this watch again? Data on the watch stays.</string>
+    <string name="pairing_repair">Pair again</string>
+    <string name="pairing_later">Not now</string>
+    <!-- Markenname, in allen Sprachen gleich -->
+    <string name="app_name" translatable="false">Advantly</string>
+    <string name="wear_version">v%1$s</string>
+    <string name="home_privacy">Privacy: match data goes to your paired phone, heart rate and steps only as set under “Heart rate &amp; steps”. Details in the phone app under Profile › Account &amp; privacy.</string>
+
+    <!-- Sportarten -->
+    <string name="sport_tennis">Tennis</string>
+    <string name="sport_padel">Padel</string>
+    <string name="sport_pickleball">Pickleball</string>
+    <string name="sport_badminton">Badminton</string>
+    <string name="sport_table_tennis">Table tennis</string>
+
+    <!-- Startliste (W1) -->
+    <string name="home_new_match">New match</string>
+    <string name="home_repeat_last">Same as last time</string>
+    <string name="home_resume">Continue match</string>
+    <string name="home_recent">Recent results</string>
+    <string name="home_no_matches">No matches yet</string>
+    <string name="workout_toggle">Run workout</string>
+    <string name="workout_toggle_hint">Live heart rate, keeps the app awake</string>
+    <string name="result_won">Won</string>
+    <string name="result_lost">Lost</string>
+    <string name="result_drawn">Draw</string>
+    <string name="result_abandoned">Abandoned</string>
+
+    <string name="home_phone_connected">Connected to phone</string>
+    <string name="home_phone_disconnected">Phone not connected</string>
+    <string name="power_save_hint">Battery saver can interrupt the connection to the phone</string>
+
+    <!-- Kurz-Wizard (W2) -->
+    <string name="setup_sport_title">Sport</string>
+    <string name="setup_discipline_title">Singles or doubles?</string>
+    <string name="discipline_singles">Singles</string>
+    <string name="discipline_doubles">Doubles</string>
+    <string name="setup_format_title">Format</string>
+    <string name="setup_format_required">Choose the number of sets</string>
+    <string name="setup_default">Default</string>
+    <string name="setup_server_title">Who serves first?</string>
+    <string name="setup_server_hint">Tap to start the match</string>
+    <string name="format_best_of">Best of %1$d</string>
+    <string name="format_open_sets">Open (set by set)</string>
+    <string name="format_open_games">Open (game by game)</string>
+    <string name="format_tennis_mtb">Best of 3 · match tiebreak</string>
+    <string name="format_one_set">1 set</string>
+    <string name="format_short_sets">Short sets to 4</string>
+    <string name="format_padel_golden">Best of 3 · golden point</string>
+    <string name="format_padel_star">Best of 3 · star point</string>
+    <string name="format_padel_golden_stb">Golden point · super tiebreak</string>
+    <string name="format_pickleball_one">1 game to %1$d</string>
+    <string name="format_pickleball_bo3">Best of 3 to %1$d</string>
+    <string name="format_pickleball_rally">Rally scoring to %1$d</string>
+    <string name="format_badminton_bo3" tools:ignore="PluralsCandidate">Best of 3 · %1$d points</string>
+    <string name="format_badminton_one" tools:ignore="PluralsCandidate">1 game · %1$d points</string>
+    <string name="format_table_tennis">Best of %1$d (%2$d to win)</string>
+
+    <!-- Live-Score (W3) -->
+    <string name="label_us">US</string>
+    <string name="label_them">THEM</string>
+    <string name="player_you">You</string>
+    <string name="player_partner">Partner</string>
+    <string name="player_opponent">Opponent</string>
+    <string name="player_opponent_1">Opponent 1</string>
+    <string name="player_opponent_2">Opponent 2</string>
+    <string name="serve_arrow" translatable="false">%1$s → %2$s</string>
+    <string name="serve_from" translatable="false">%1$s · %2$s</string>
+    <string name="heart_rate_value" translatable="false">♥ %1$d</string>
+    <string name="heart_rate_unknown" translatable="false">♥ --</string>
+    <string name="role_view">VIEW ONLY</string>
+    <string name="role_scorer_short">Scorer</string>
+    <string name="device_phone">phone</string>
+    <string name="device_watch">other watch</string>
+    <string name="device_other">other device</string>
+    <string name="scoring_by">Scoring: %1$s</string>
+    <string name="sync_synced">Synced</string>
+    <plurals name="sync_pending">
+        <item quantity="one">%1$d pending</item>
+        <item quantity="other">%1$d pending</item>
+    </plurals>
+    <string name="sync_local">Local only</string>
+    <string name="sync_blocked">Sync blocked</string>
+    <string name="sync_live">Live</string>
+    <string name="sync_ago_seconds">%1$d s ago</string>
+    <string name="sync_ago_minutes">%1$d min ago</string>
+    <string name="sync_no_contact">No contact</string>
+    <string name="sync_last_update">Last update %1$s</string>
+    <string name="status_view_live">VIEW · %1$s scoring</string>
+    <string name="status_view_stale">VIEW · %1$s</string>
+    <string name="take_over_offer">Take over scoring</string>
+    <plurals name="rejected_inputs">
+        <item quantity="one">%1$d input not applied</item>
+        <item quantity="other">%1$d inputs not applied</item>
+    </plurals>
+    <string name="locked_label">Locked · hold to unlock</string>
+
+    <!-- Hinweis-Pill (04 §4.3.1, 02 §8.2/§8.4) -->
+    <string name="hint_match_point">Match point</string>
+    <plurals name="hint_match_points">
+        <item quantity="one">%1$d match point</item>
+        <item quantity="other">%1$d match points</item>
+    </plurals>
+    <string name="hint_set_point">Set point</string>
+    <plurals name="hint_set_points">
+        <item quantity="one">%1$d set point</item>
+        <item quantity="other">%1$d set points</item>
+    </plurals>
+    <string name="hint_break_point">Break point</string>
+    <plurals name="hint_break_points">
+        <item quantity="one">%1$d break point</item>
+        <item quantity="other">%1$d break points</item>
+    </plurals>
+    <string name="hint_golden_point">Golden point</string>
+    <string name="hint_deciding_point">Deciding point</string>
+    <string name="hint_star_point">Star point</string>
+    <string name="hint_deuce">Deuce</string>
+    <string name="hint_extension">Deuce</string>
+    <string name="hint_tiebreak">Tiebreak</string>
+    <string name="hint_match_tiebreak">Match tiebreak</string>
+    <string name="hint_super_tiebreak">Super tiebreak</string>
+    <string name="hint_change_ends">Change ends</string>
+    <string name="hint_receive_swap">Swap receivers</string>
+    <string name="hint_side_out">Side out</string>
+    <string name="hint_second_server">Second server</string>
+    <string name="hint_interval">Break up to 60 s</string>
+    <string name="hint_paused">Paused</string>
+
+    <!-- Toasts -->
+    <string name="undo_toast">Undo: %1$s → %2$s</string>
+    <string name="redo_toast">Redone</string>
+    <string name="nothing_to_undo">Nothing to undo</string>
+    <string name="toast_locked">Locked – hold to unlock</string>
+    <string name="toast_unlocked">Unlocked</string>
+    <string name="toast_now_scorer">You are scoring now</string>
+    <string name="toast_other_scores">Now scoring: %1$s</string>
+    <string name="toast_match_removed">Match was deleted</string>
+    <string name="toast_start_failed">Match could not be started</string>
+
+    <!-- Steuerseite (W4) -->
+    <string name="controls_title">Controls</string>
+    <string name="action_back_to_score">Back to score</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_redo">Redo</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_resume_play">Resume</string>
+    <string name="action_lock">Lock screen</string>
+    <string name="action_end_match">End match</string>
+    <string name="action_take_over">Take over</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm_end">End</string>
+    <string name="action_retry">Try again</string>
+    <string name="action_replace">Replace</string>
+    <string name="action_without_workout">Without workout</string>
+    <string name="action_yes">Yes</string>
+    <string name="action_no_end">No, end match</string>
+    <string name="action_done">Done</string>
+    <string name="action_follow_up">Another one?</string>
+    <string name="stats_line">%1$s kcal · %2$s steps</string>
+    <string name="workout_starting">Starting workout…</string>
+    <string name="workout_running">Workout running</string>
+    <string name="workout_off">Without workout</string>
+    <string name="count_only_label">Without workout: the watch may close the app</string>
+
+    <!-- Korrekturen (02 §7.1/§7.4) -->
+    <string name="action_correct_server">Correct server</string>
+    <string name="correct_from_start">Applies from the start (retroactive)</string>
+    <string name="correct_from_now">Applies from now on</string>
+    <string name="swap_positions">Swap positions: %1$s</string>
+    <string name="swap_receiver">Swap receiver: %1$s</string>
+    <string name="toast_corrected">Corrected</string>
+
+    <!-- Dialoge (W6/W7) -->
+    <string name="confirm_take_over_title">Score on this watch?</string>
+    <string name="confirm_take_over_text">Currently scoring: %1$s. It will then only display.</string>
+    <string name="confirm_end_title">End match?</string>
+    <string name="confirm_end_text">The match ends without a result.</string>
+    <string name="unit_set">Set %1$d</string>
+    <string name="unit_game">Game %1$d</string>
+    <string name="decision_won">won</string>
+    <string name="decision_lost">lost</string>
+    <string name="dialog_next_set">Set %1$d?</string>
+    <string name="dialog_next_game">Game %1$d?</string>
+    <string name="decision_waiting">%1$s decides</string>
+    <string name="finished_title">Match over</string>
+    <string name="finished_steps">Steps %1$s</string>
+    <string name="finished_max_heart_rate">Max HR %1$s</string>
+
+    <!-- Bedienung W2 (Feldtest 2026-10-15, docs/w2-ui-vertrag.md) -->
+    <string name="setup_tiebreak_only_7">Tiebreak only (to 7)</string>
+    <string name="setup_tiebreak_only_10">Champions tiebreak only (to 10)</string>
+    <string name="setup_padel_tiebreak_only_10">Super tiebreak only (to 10)</string>
+    <string name="setup_games_per_set">Games per set</string>
+    <string name="setup_games_one_hint">1 game: win by 2, tiebreak at 1:1</string>
+    <plurals name="games_per_set_value">
+        <item quantity="one">%1$d game</item>
+        <item quantity="other">%1$d games</item>
+    </plurals>
+    <string name="setup_serve_tracking">Serves</string>
+    <string name="setup_serve_full">Yes</string>
+    <string name="setup_serve_double_faults_only">Double faults only</string>
+    <string name="setup_serve_off">No</string>
+    <string name="setup_serve_tracking_hint">Yes: tap 2nd serve or double fault after the point, otherwise it counts as a 1st serve</string>
+    <string name="live_remove_point_us">Remove our last point</string>
+    <string name="live_remove_point_them">Remove opponents\' last point</string>
+    <string name="live_point_removed">Point removed</string>
+    <string name="toast_nothing_to_remove">No point to remove</string>
+    <string name="serve_bar_title">Serve on the last point</string>
+    <string name="serve_first_in">1st serve</string>
+    <string name="serve_second_in">2nd serve</string>
+    <string name="serve_double_fault">Double fault</string>
+    <string name="serve_panel_second_in">2nd\nserve</string>
+    <string name="serve_panel_double_fault">Double\nfault</string>
+    <string name="server_choice_title_game1">Who serves first?</string>
+    <string name="server_choice_title_game2_us">Who serves for us?</string>
+    <string name="server_choice_title_game2_them">Who serves for the opponents?</string>
+    <string name="server_choice_prompt">Choose server</string>
+    <string name="action_later">Later</string>
+    <string name="set_end_regular">Regular set</string>
+    <string name="set_end_tiebreak_7">Tiebreak to 7</string>
+    <string name="set_end_champions_10">Champions tiebreak to 10</string>
+    <string name="set_end_super_10">Super tiebreak to 10</string>
+    <string name="set_end_finish">End match</string>
+    <string name="update_other_device">Please update Advantly on your phone</string>
+    <string name="update_this_device">Please update Advantly on this watch</string>
+    <string name="update_other_device_short">Update phone app</string>
+    <string name="update_this_device_short">Update watch app</string>
+
+    <!-- TalkBack (04 §8) -->
+    <string name="a11y_point_us">Point for us</string>
+    <string name="a11y_point_them">Point for them</string>
+    <string name="a11y_score">Score %1$s to %2$s</string>
+    <string name="a11y_serving_us">Serve: us</string>
+    <string name="a11y_serving_them">Serve: them</string>
+    <string name="serve_court_right">Right</string>
+    <string name="serve_court_left">Left</string>
+    <string name="a11y_serve_court_right">Serving from the right</string>
+    <string name="a11y_serve_court_left">Serving from the left</string>
+    <string name="a11y_server">%1$s serves</string>
+    <string name="a11y_view_only">View only, %1$s</string>
+
+    <!-- Workout / Health (05 §2) -->
+    <string name="permission_rationale">Heart rate is shown live during the match. It is only stored if you switch on “Record heart rate history” on your phone.</string>
+    <string name="hint_no_health">Without heart rate and activity permission: no workout, the watch may close the app in the background</string>
+    <string name="hint_no_heart_rate">Without heart rate permission: workout without heart rate</string>
+    <string name="hint_no_activity">Without activity permission: no steps or calories</string>
+    <string name="hint_no_notifications">Without notifications: no icon on the watch face and no notice of phone matches</string>
+    <string name="conflict_title">Another app is recording a workout</string>
+    <string name="conflict_text">Replace it with this match? The other workout will be ended.</string>
+    <string name="error_title">Workout failed</string>
+    <string name="error_permissions">Permissions missing</string>
+    <string name="error_capabilities">Watch capabilities unavailable</string>
+    <string name="error_status_query">Workout status unavailable</string>
+    <string name="error_start">Workout could not be started</string>
+    <string name="error_end">Workout could not be ended</string>
+    <string name="error_callback">No connection to Health Services</string>
+    <string name="error_external_end">Workout was ended by the system or another app</string>
+    <string name="error_foreground">Background service could not be started</string>
+    <string name="error_internal">Unexpected error</string>
+
+    <!-- Benachrichtigungen -->
+    <string name="notification_channel_workout">Running match</string>
+    <string name="notification_title">Advantly match</string>
+    <string name="notification_text">Tap to return to scoring</string>
+    <string name="ongoing_status_template" translatable="false">#score# · #duration#</string>
+    <string name="notification_channel_match">New matches</string>
+    <string name="notification_match_title">Match running</string>
+    <string name="notification_match_scorer">This watch is scoring – tap to open</string>
+    <string name="notification_match_display">Live score from the phone – tap to open</string>
+    <string name="live_workout_telemetry_description">Heart rate: %1$s beats per minute, steps: %2$s</string>
+    <string name="telemetry_unknown">—</string>
+    <string name="health_recording_description">Recording heart rate history. %1$s</string>
+    <!-- P2-J: Telemetrie-Sichtbarkeit (Startliste) -->
+    <string name="telemetry_visibility_title">Heart rate &amp; steps</string>
+    <string name="telemetry_visibility_private">Only me</string>
+    <string name="telemetry_visibility_off">Off</string>
+    <string name="telemetry_visibility_private_hint">Only on this watch and your phone</string>
+    <string name="telemetry_visibility_off_hint">Not shown, nothing is sent</string>
+    <string name="telemetry_controls_off">Heart rate &amp; steps: Off</string>
+    <string name="setup_unassigned">Unassigned</string>
+    <string name="setup_no_players">Players available after syncing with your phone</string>
+    <!-- Feldtest-Modus (nur Debug-Build, P1-Gate) -->
+    <string name="field_test_toggle">Field test mode</string>
+    <string name="field_test_hint">Logs battery, display and sync every minute to %1$s (no health data)</string>
+    <string name="setup_start_match">Start match</string>
+    <string name="correct_rejected">Correction could not be applied. Please check the current server.</string>
+    <string name="server_choice_context_game">Set %1$d · Game %2$d</string>
+    <string name="server_choice_context_tiebreak_first">Set %1$d · First serve</string>
+    <string name="server_choice_context_tiebreak_second">Set %1$d · Other team’s first serve</string>
+    <string name="server_choice_current">Current: %1$s. You can choose until the next point.</string>
+    <string name="server_choice_current_unknown">You can choose until the next point.</string>
+    <string name="phone_status_green">Phone connected · same build</string>
+    <string name="phone_status_yellow">Phone connected · update recommended</string>
+    <string name="phone_status_red">Phone unreachable</string>
+    <string name="phone_status_gray">No phone paired</string>
+    <string name="phone_status_development">Development build</string>
+    <string name="installation_error_title">Local data unavailable</string>
+    <string name="installation_error_body">Local data could not be checked. Counting, device sync and account features are paused. Try again to repeat this check. Existing match data is kept.</string>
+    <string name="installation_error_retry">Try again</string>
+    <string name="installation_loading">Checking local data…</string>
+    <!-- Zuschauen auf der Uhr (plan-live-mitspieler §3.2): fremde Matches nur ansehen, nie zählen -->
+    <string name="spectate_entry">Live</string>
+    <string name="spectate_entry_hint">Follow friends live</string>
+    <string name="spectate_title">Watching</string>
+    <string name="spectate_badge">WATCHING · %1$s</string>
+    <string name="spectate_waiting">Asking phone…</string>
+    <string name="spectate_empty">No match live right now</string>
+    <string name="spectate_empty_hint">Matches you play in or watch appear here. Sign in on the phone for this.</string>
+    <string name="spectate_relation_player">You play in this match</string>
+    <string name="spectate_relation_visitor">You are watching</string>
+    <string name="spectate_relation_scorer">You may score</string>
+    <string name="spectate_finished">Finished</string>
+    <string name="spectate_scorer_offline">Scorer offline</string>
+    <string name="spectate_games">Games %1$d:%2$d</string>
+    <string name="spectate_serving">serving</string>
+</resources>

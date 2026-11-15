@@ -1,0 +1,205 @@
+package eu.advantly.android.sync
+
+import android.os.Handler
+import android.os.Looper
+import com.google.android.gms.tasks.Tasks
+import com.google.android.gms.wearable.DataEvent
+import com.google.android.gms.wearable.DataEventBuffer
+import com.google.android.gms.wearable.MessageEvent
+import com.google.android.gms.wearable.Wearable
+import com.google.android.gms.wearable.WearableListenerService
+import eu.advantly.android.AdvantlyPhoneApplication
+import eu.advantly.android.auth.phoneLiveViews
+import eu.advantly.data.AndroidInstallationAvailability
+import eu.advantly.data.AndroidInstallationGuard
+import eu.advantly.device.link.WearDataLayerInbound
+import eu.advantly.device.link.WearDataLayerTransport
+import eu.advantly.match.session.AndroidMatchSessions
+import eu.advantly.match.session.AndroidSessionBoundary
+import eu.advantly.presentation.live.LiveTelemetryGate
+import eu.advantly.presentation.live.LiveTelemetryStore
+import eu.advantly.sync.protocol.LiveTelemetry
+import eu.advantly.sync.protocol.LiveTelemetryCodec
+import eu.advantly.sync.protocol.LiveViewSubscription
+import eu.advantly.sync.protocol.PeerKind
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+
+/**
+ * Empfang von Uhr-Events, wenn keine Activity läuft (App im Hintergrund oder Prozess beendet, W1-I): Google Play
+ * Services startet den Prozess für diesen manifestregistrierten Service (Pfad `/advantly/link…`).
+ *
+ * - **Nachricht** (Live-Kanal): Session sicherstellen, Frame an den laufenden Transport geben
+ *   ([WearDataLayerInbound]) und warten, bis die Session ihn auf dem Main-Thread gespeichert hat – erst dann endet der
+ *   Callback. Das Ack geht wie gewohnt an die Uhr; fehlt es, wiederholt die Uhr bzw. gleicht beim nächsten `Hello` ab.
+ * - **DataItem** (Queue-Kanal, Kaltstart): Items einfrieren (`freeze()`), Session sicherstellen, jedes Item für dieses
+ *   Gerät mit Verarbeitungsbestätigung an den Transport geben und den Callback offenhalten (mit Timeout), bis die
+ *   Session alle gespeichert hat. Gelöscht wird ein Item erst NACH dem Speichern; bleibt es wegen Timeout/Prozess-Tod
+ *   liegen, liest es der Transport beim nächsten Start erneut (idempotent).
+ *
+ * - **Telemetrie** (eigener Message-Pfad): nur RAM mit 30-s-Ablauf, nur bekannte eigene Uhr und ihr Uhr-Match mit Workout,
+ *   nie bei Telemetrie-Sichtbarkeit „Gar nicht“ (P2-J).
+ *
+ * - **Uhr-Zuschauen** (`/advantly/live/subscribe`): je Abo-Nachricht der eigenen Uhr genau ein Abruf über den
+ *   Konto-Host auf Main ([phoneLiveViews], auch nach Prozesstod), Antwort `LiveViews` an die Uhr (plan-live-mitspieler §3.2).
+ *
+ * Callbacks laufen auf einem Worker-Thread; die Session nur auf dem Main-Thread benutzen.
+ */
+class PhoneSyncListenerService : WearableListenerService() {
+    private val main = Handler(Looper.getMainLooper())
+
+    private val expireTelemetry = Runnable { LiveTelemetryStore.Phone.expire() }
+
+    override fun onMessageReceived(event: MessageEvent) {
+        awaitBootstrap()
+        if (!AndroidInstallationGuard.privateTransportAllowed(this)) return
+        if (event.path == LiveTelemetry.MESSAGE_PATH) {
+            val payload = LiveTelemetryCodec.decode(event.data) ?: return
+            onMainAndWait {
+                val state = AndroidMatchSessions.current()?.state?.value ?: return@onMainAndWait
+                // nur Werte des Uhr-Matches (F22: das Handy kann mehrere Matches offen haben)
+                val watchMatch = state.watchMatchId?.let(state::match)
+                if (LiveTelemetryGate.accept(
+                        payload,
+                        event.sourceNodeId,
+                        watchMatch?.id,
+                        watchMatch?.meta?.watchWorkout == true,
+                        state.sync.peers,
+                        // „Gar nicht“ (P2-J): auch Werte einer älteren Uhr ohne diese Einstellung verwerfen
+                        state.telemetryVisibility,
+                    )
+                ) {
+                    LiveTelemetryStore.Phone.receive(payload)
+                    main.removeCallbacks(expireTelemetry)
+                    // Handler nutzt uptime: Tiefschlaf kann das Aufräumen verschieben; Lesen prüft elapsedRealtime.
+                    main.postDelayed(expireTelemetry, LiveTelemetryStore.STALE_AFTER_MS)
+                }
+            }
+            return
+        }
+        if (event.path == LiveViewSubscription.MESSAGE_PATH) {
+            val peers =
+                onMainAndWait {
+                    AndroidMatchSessions
+                        .current()
+                        ?.state
+                        ?.value
+                        ?.sync
+                        ?.peers
+                } ?: return
+            PhoneLiveViews.respond(event.sourceNodeId, event.data, peers, send = { node, path, payload ->
+                if (AndroidInstallationGuard.privateTransportAllowed(this)) {
+                    Wearable.getMessageClient(applicationContext).sendMessage(node, path, payload)
+                }
+            }, provider = phoneLiveViews(applicationContext))
+            return
+        }
+        if (event.path != WearDataLayerTransport.MESSAGE_PATH) return
+        onMainAndWait {
+            ensureSession()
+            WearDataLayerInbound.deliverMessage(event.sourceNodeId, event.path, event.data)
+        }
+        // Der Link verarbeitet Frames per post() auf dem Main-Thread: eine zweite Runde wartet diese Verarbeitung ab
+        onMainAndWait {}
+    }
+
+    override fun onDataChanged(events: DataEventBuffer) {
+        awaitBootstrap()
+        if (!AndroidInstallationGuard.privateTransportAllowed(this)) {
+            events.release()
+            return // Keine Zustellbestätigung und kein Löschen eines nicht gespeicherten Queue-Elements.
+        }
+        // Buffer gilt nur während dieses Aufrufs: Items einfrieren, dann freigeben
+        val items = events.filter { it.type == DataEvent.TYPE_CHANGED }.map { it.dataItem.freeze() }
+        events.release()
+        if (onMainAndWait {
+                ensureSession()
+                true
+            } != true
+        ) {
+            return
+        }
+        if (items.isEmpty()) return
+        val localNode = localNodeId() ?: return // ohne eigene Node-ID kein sicheres Zielfiltern; Transport liest beim Start
+        val dataClient = Wearable.getDataClient(applicationContext)
+        val persisted = CountDownLatch(items.size)
+        if (onMainAndWait {
+                val expected = AndroidMatchSessions.current()
+                items.forEach { item ->
+                    val uri = item.uri
+                    val delivered =
+                        WearDataLayerInbound.deliverQueuedItem(localNode, uri.host, uri.pathSegments, item.data) {
+                            // Session hat den Frame gespeichert → erst jetzt aus der Queue löschen
+                            if (AndroidMatchSessions.current() === expected && AndroidInstallationGuard.privateTransportAllowed(this)) {
+                                dataClient.deleteDataItems(uri)
+                                persisted.countDown()
+                            }
+                        }
+                    if (!delivered) persisted.countDown()
+                }
+                true
+            } != true
+        ) {
+            return
+        }
+        persisted.await(QUEUE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    private fun localNodeId(): String? =
+        try {
+            Tasks.await(Wearable.getNodeClient(applicationContext).localNode, QUEUE_TIMEOUT_SECONDS, TimeUnit.SECONDS).id
+        } catch (e: ExecutionException) {
+            null
+        } catch (e: TimeoutException) {
+            null
+        } catch (e: InterruptedException) {
+            null
+        }
+
+    /**
+     * Kaltstart: Die Application prüft die Installation asynchron. Dieser Worker-Thread wartet auf die Prüfung und den
+     * Prozess-Bootstrap auf dem Main-Thread (idempotent), statt Frames vorzeitig als nicht erlaubt zu verwerfen.
+     */
+    private fun awaitBootstrap() {
+        // Der Worker wartet hier ggf. auf die gemeinsame Prüfung. Nur ohne Session (noch kein Bootstrap) auf Main warten;
+        // Fehler- oder Hold-Zustand und laufende Session gehen ohne Umweg weiter.
+        if (AndroidInstallationGuard.check(this) !is AndroidInstallationAvailability.Ready || AndroidMatchSessions.current() != null) return
+        val done = CountDownLatch(1)
+        AndroidInstallationGuard.checkAsync(this) {
+            (application as? AdvantlyPhoneApplication)?.bootstrap()
+            done.countDown()
+        }
+        if (Looper.myLooper() != Looper.getMainLooper()) done.await(BOOTSTRAP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    private fun ensureSession() {
+        AndroidMatchSessions.get(applicationContext, PeerKind.PHONE)
+    }
+
+    private fun <T> onMainAndWait(block: () -> T): T? {
+        val expected = AndroidMatchSessions.current() ?: return null
+        val boundary =
+            AndroidSessionBoundary(applicationContext, {
+                AndroidMatchSessions.current() === expected && AndroidInstallationGuard.privateTransportAllowed(applicationContext)
+            })
+        if (Looper.myLooper() == Looper.getMainLooper()) return boundary.run(block)
+        val done = CountDownLatch(1)
+        var result: T? = null
+        main.post {
+            try {
+                result = boundary.run(block)
+            } finally {
+                done.countDown()
+            }
+        }
+        return if (done.await(MAIN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) result else null
+    }
+
+    private companion object {
+        const val MAIN_TIMEOUT_SECONDS = 5L
+        const val QUEUE_TIMEOUT_SECONDS = 10L
+        const val BOOTSTRAP_TIMEOUT_SECONDS = 30L
+    }
+}
